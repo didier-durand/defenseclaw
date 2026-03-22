@@ -4,7 +4,8 @@ DefenseClaw is the enterprise governance layer for [OpenClaw](https://github.com
 
 ## Table of Contents
 
-- [Quick Start Guide](QUICKSTART.md)
+- [Installation Guide](INSTALL.md) — DGX Spark + macOS, existing or fresh OpenClaw
+- [Quick Start Guide](QUICKSTART.md) — 5-minute walkthrough of all commands
 - [Architecture](ARCHITECTURE.md)
 - [CLI Reference](CLI.md)
 - [TUI Guide](TUI.md)
