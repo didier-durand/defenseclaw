@@ -210,6 +210,37 @@ class TestSkillScannerWrapper(unittest.TestCase):
         with self.assertRaises(SystemExit):
             s.scan("/tmp/nonexistent")
 
+    @patch("defenseclaw.scanner.skill.SkillScannerWrapper._convert")
+    def test_scan_with_mocked_sdk(self, mock_convert):
+        from defenseclaw.config import SkillScannerConfig
+        from defenseclaw.scanner.skill import SkillScannerWrapper
+        from defenseclaw.models import ScanResult
+        from datetime import datetime, timezone
+
+        mock_sdk_module = MagicMock()
+        mock_scanner_instance = MagicMock()
+        mock_sdk_module.SkillScanner.return_value = mock_scanner_instance
+        mock_scanner_instance.scan_skill.return_value = MagicMock(findings=[])
+
+        mock_convert.return_value = ScanResult(
+            scanner="skill-scanner",
+            target="/tmp/skill",
+            timestamp=datetime.now(timezone.utc),
+            findings=[],
+        )
+
+        with patch.dict("sys.modules", {
+            "skill_scanner": mock_sdk_module,
+            "skill_scanner.core": MagicMock(),
+            "skill_scanner.core.analyzer_factory": MagicMock(),
+            "skill_scanner.core.scan_policy": MagicMock(),
+        }):
+            scanner = SkillScannerWrapper(SkillScannerConfig())
+            result = scanner.scan("/tmp/skill")
+
+        self.assertTrue(result.is_clean())
+        self.assertEqual(result.scanner, "skill-scanner")
+
 
 if __name__ == "__main__":
     unittest.main()
