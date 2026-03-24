@@ -19,7 +19,8 @@ def plugin() -> None:
 @click.argument("name_or_path")
 @click.option("--json", "as_json", is_flag=True, help="Output scan results as JSON")
 @click.option("--policy", "policy_name", default="", help="Scan policy: default, strict, permissive, or path to YAML")
-@click.option("--profile", type=click.Choice(["default", "strict"]), default=None, help="Scan profile (overrides policy profile)")
+@click.option("--profile", type=click.Choice(["default", "strict"]), default=None,
+              help="Scan profile (overrides policy profile)")
 @click.option("--use-llm", is_flag=True, help="Enable LLM-based semantic analysis (uses skill_scanner LLM config)")
 @click.option("--llm-model", default="", help="LLM model override (e.g. claude-sonnet-4-20250514, gpt-4)")
 @click.option("--llm-provider", default="", help="LLM provider hint (anthropic, openai, ollama, etc.)")
