@@ -48,13 +48,53 @@ Most teams discover these risks *after* deployment. DefenseClaw moves security *
 
 ## Quick Start
 
+### Python CLI (Recommended)
+
 ```bash
 git clone https://github.com/defenseclaw/defenseclaw.git
 cd defenseclaw
-make build
+
+# Using uv (recommended)
+uv venv .venv
+source .venv/bin/activate  # On Windows: .venv\Scripts\activate
+uv pip install -e cli
+
+# Or using pip
+python3 -m venv .venv
+source .venv/bin/activate
+pip install -e cli
+
+# Initialize DefenseClaw
 defenseclaw init
-defenseclaw deploy ./your-project/
-defenseclaw tui
+
+# Scan a skill (uses native SDK — no subprocess)
+defenseclaw skill scan /path/to/skill
+
+# Check status
+defenseclaw status
+
+# View alerts
+defenseclaw alerts
+```
+
+### Go CLI (Alternative)
+
+```bash
+make build
+./defenseclaw init
+./defenseclaw deploy ./your-project/
+./defenseclaw tui
+```
+
+### Running Tests
+
+```bash
+# Python CLI tests
+source .venv/bin/activate
+python3 -m unittest discover -s cli/tests -v
+
+# Go tests
+make test
 ```
 
 ## What It Does

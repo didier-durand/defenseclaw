@@ -1,0 +1,886 @@
+"""defenseclaw skill — Manage skills: scan, block, allow, list, disable, enable,
+quarantine, restore, info, install.
+
+Mirrors internal/cli/skill.go.
+"""
+
+from __future__ import annotations
+
+import json
+import os
+import subprocess
+import sys
+from pathlib import Path
+from typing import Any
+
+import click
+
+from defenseclaw.context import AppContext, pass_ctx
+
+
+@click.group()
+def skill() -> None:
+    """Manage OpenClaw skills — install, scan, block, allow, disable, enable, quarantine, restore."""
+
+
+# ---------------------------------------------------------------------------
+# OpenClaw helpers (mirror listOpenclawSkillsFull / getOpenclawSkillInfo)
+# ---------------------------------------------------------------------------
+
+def _run_openclaw(*args: str) -> str | None:
+    """Run an openclaw CLI command and return stdout, or None on failure."""
+    try:
+        result = subprocess.run(
+            ["openclaw", *args],
+            capture_output=True, text=True, timeout=30,
+        )
+        if result.returncode == 0:
+            return result.stdout
+    except (FileNotFoundError, subprocess.TimeoutExpired):
+        pass
+    return None
+
+
+def _list_openclaw_skills_full() -> dict[str, Any] | None:
+    out = _run_openclaw("skills", "list", "--json")
+    if out is None:
+        return None
+    try:
+        return json.loads(out)
+    except json.JSONDecodeError:
+        return None
+
+
+def _get_openclaw_skill_info(name: str) -> dict[str, Any] | None:
+    out = _run_openclaw("skills", "info", name, "--json")
+    if out is None:
+        return None
+    try:
+        return json.loads(out)
+    except json.JSONDecodeError:
+        return None
+
+
+# ---------------------------------------------------------------------------
+# Scan map / actions map builders (mirror Go buildSkillScanMap / buildSkillActionsMap)
+# ---------------------------------------------------------------------------
+
+def _build_scan_map(store) -> dict[str, dict[str, Any]]:
+    """Build a map of skill-name -> latest scan entry from the DB."""
+    scan_map: dict[str, dict[str, Any]] = {}
+    if store is None:
+        return scan_map
+    try:
+        latest = store.latest_scans_by_scanner("skill-scanner")
+    except Exception:
+        return scan_map
+    for ls in latest:
+        name = os.path.basename(ls["target"])
+        scan_map[name] = {
+            "target": ls["target"],
+            "clean": ls["finding_count"] == 0,
+            "max_severity": ls["max_severity"] or "INFO",
+            "total_findings": ls["finding_count"],
+        }
+    return scan_map
+
+
+def _build_actions_map(store) -> dict[str, Any]:
+    """Build a map of skill-name -> ActionEntry from the DB."""
+    from defenseclaw.models import ActionEntry
+    actions_map: dict[str, ActionEntry] = {}
+    if store is None:
+        return actions_map
+    try:
+        entries = store.list_actions_by_type("skill")
+    except Exception:
+        return actions_map
+    for e in entries:
+        actions_map[e.target_name] = e
+    return actions_map
+
+
+# ---------------------------------------------------------------------------
+# skill list
+# ---------------------------------------------------------------------------
+
+def _skill_status(s: dict[str, Any]) -> str:
+    if s.get("disabled"):
+        return "disabled"
+    if s.get("blockedByAllowlist"):
+        return "blocked"
+    if s.get("eligible"):
+        return "active"
+    return "inactive"
+
+
+def _skill_status_display(s: dict[str, Any]) -> str:
+    if s.get("disabled"):
+        return "✗ disabled"
+    if s.get("blockedByAllowlist"):
+        return "✗ blocked"
+    if s.get("eligible"):
+        return "✓ ready"
+    return "✗ missing"
+
+
+@skill.command("list")
+@click.option("--json", "as_json", is_flag=True, help="Output merged skill list as JSON")
+@pass_ctx
+def list_skills(app: AppContext, as_json: bool) -> None:
+    """List all OpenClaw skills with their latest scan severity."""
+    from rich.console import Console
+    from rich.table import Table
+
+    from defenseclaw.enforce import PolicyEngine
+
+    oc_list = _list_openclaw_skills_full()
+    skills = oc_list.get("skills", []) if oc_list else []
+
+    scan_map = _build_scan_map(app.store)
+    actions_map = _build_actions_map(app.store)
+
+    # If no openclaw skills found, fall back to actions-only view
+    if not skills:
+        if not actions_map:
+            click.echo("No skills found. Is openclaw installed?")
+            click.echo("  Showing enforcement-only data from the audit database.")
+            return
+        # Build synthetic skill list from actions
+        for name, ae in actions_map.items():
+            skills.append({
+                "name": name,
+                "description": "",
+                "emoji": "",
+                "eligible": False,
+                "disabled": ae.actions.runtime == "disable",
+                "blockedByAllowlist": False,
+                "source": "actions-db",
+                "bundled": False,
+                "homepage": "",
+            })
+
+    if as_json:
+        _print_skill_list_json(skills, scan_map, actions_map)
+        return
+
+    _print_skill_list_table(skills, scan_map, actions_map)
+
+
+def _print_skill_list_json(
+    skills: list[dict[str, Any]],
+    scan_map: dict[str, dict[str, Any]],
+    actions_map: dict[str, Any],
+) -> None:
+    items = []
+    for s in skills:
+        name = s.get("name", "")
+        item: dict[str, Any] = {
+            "name": name,
+            "description": s.get("description", ""),
+            "source": s.get("source", ""),
+            "status": _skill_status(s),
+            "eligible": s.get("eligible", False),
+            "disabled": s.get("disabled", False),
+            "bundled": s.get("bundled", False),
+        }
+        hp = s.get("homepage", "")
+        if hp:
+            item["homepage"] = hp
+        if name in scan_map:
+            item["scan"] = scan_map[name]
+        if name in actions_map:
+            ae = actions_map[name]
+            if not ae.actions.is_empty():
+                item["actions"] = ae.actions.to_dict()
+        items.append(item)
+    click.echo(json.dumps(items, indent=2, default=str))
+
+
+def _print_skill_list_table(
+    skills: list[dict[str, Any]],
+    scan_map: dict[str, dict[str, Any]],
+    actions_map: dict[str, Any],
+) -> None:
+    from rich.console import Console
+    from rich.table import Table
+
+    ready_count = sum(
+        1 for s in skills if s.get("eligible") and not s.get("disabled")
+    )
+
+    console = Console()
+    table = Table(title=f"Skills ({ready_count}/{len(skills)} ready)")
+    table.add_column("Status", style="bold")
+    table.add_column("Skill")
+    table.add_column("Description", max_width=50)
+    table.add_column("Source")
+    table.add_column("Severity")
+    table.add_column("Actions")
+
+    for s in skills:
+        name = s.get("name", "")
+        emoji = s.get("emoji", "")
+        display_name = f"{emoji} {name}" if emoji else name
+        status_display = _skill_status_display(s)
+        desc = s.get("description", "")
+        source = s.get("source", "")
+
+        severity = "-"
+        sev_style = ""
+        if name in scan_map:
+            severity = scan_map[name]["max_severity"]
+            sev_style = {
+                "CRITICAL": "bold red",
+                "HIGH": "red",
+                "MEDIUM": "yellow",
+                "LOW": "cyan",
+            }.get(severity, "")
+
+        actions_str = "-"
+        if name in actions_map:
+            actions_str = actions_map[name].actions.summary()
+
+        status_style = ""
+        if "disabled" in status_display or "blocked" in status_display or "missing" in status_display:
+            status_style = "red"
+        elif "ready" in status_display:
+            status_style = "green"
+
+        table.add_row(
+            f"[{status_style}]{status_display}[/{status_style}]" if status_style else status_display,
+            display_name,
+            desc[:50] + "…" if len(desc) > 50 else desc,
+            source,
+            f"[{sev_style}]{severity}[/{sev_style}]" if sev_style else severity,
+            actions_str,
+        )
+
+    console.print(table)
+
+
+# ---------------------------------------------------------------------------
+# skill scan
+# ---------------------------------------------------------------------------
+
+@skill.command()
+@click.argument("target")
+@click.option("--json", "as_json", is_flag=True, help="Output scan results as JSON")
+@click.option("--path", "scan_path", default="", help="Override skill directory path")
+@pass_ctx
+def scan(app: AppContext, target: str, as_json: bool, scan_path: str) -> None:
+    """Scan a skill by name, path, or 'all' for all configured skills.
+
+    Uses the native cisco-ai-skill-scanner SDK.
+    """
+    from defenseclaw.enforce import PolicyEngine
+    from defenseclaw.scanner.skill import SkillScannerWrapper
+
+    scanner = SkillScannerWrapper(app.cfg.scanners.skill_scanner)
+
+    if target == "all":
+        _scan_all(app, scanner, as_json)
+        return
+
+    # Resolve scan directory
+    scan_dir = scan_path
+    if not scan_dir:
+        # Try openclaw skills info first
+        info = _get_openclaw_skill_info(target)
+        if info and info.get("baseDir"):
+            scan_dir = info["baseDir"]
+        else:
+            resolved = _resolve_path(app, target)
+            if resolved:
+                scan_dir = resolved
+
+    if not scan_dir:
+        click.echo(f"error: could not resolve skill {target!r} — use --path to specify manually", err=True)
+        raise SystemExit(1)
+
+    pe = PolicyEngine(app.store)
+    name = os.path.basename(scan_dir)
+
+    if pe.is_blocked("skill", name):
+        click.echo(f"BLOCKED: {name} — remove from block list first")
+        return
+
+    if pe.is_allowed("skill", name):
+        click.echo(f"ALLOWED (skip scan): {name}")
+        return
+
+    if not as_json:
+        click.echo(f"[scan] skill-scanner -> {scan_dir}")
+
+    try:
+        result = scanner.scan(scan_dir)
+    except Exception as exc:
+        click.echo(f"error: scan failed: {exc}", err=True)
+        raise SystemExit(1)
+
+    if app.logger:
+        app.logger.log_scan(result)
+
+    if as_json:
+        click.echo(result.to_json())
+    else:
+        _print_result(name, result)
+
+
+def _scan_all(app: AppContext, scanner, as_json: bool) -> None:
+    # Try openclaw skills list first
+    oc_list = _list_openclaw_skills_full()
+    if oc_list and oc_list.get("skills"):
+        skill_names = [s["name"] for s in oc_list["skills"]]
+    else:
+        skill_names = []
+
+    verdicts = []
+
+    if skill_names:
+        if not as_json:
+            click.echo(f"[scan] found {len(skill_names)} skills to scan\n")
+        for name in skill_names:
+            info = _get_openclaw_skill_info(name)
+            if not info or not info.get("baseDir"):
+                click.echo(f"[scan] warning: no baseDir for {name}", err=True)
+                continue
+            base_dir = info["baseDir"]
+            if not as_json:
+                click.echo(f"[scan] skill-scanner -> {base_dir}")
+            try:
+                result = scanner.scan(base_dir)
+                if app.logger:
+                    app.logger.log_scan(result)
+                verdicts.append({"name": name, "result": result})
+                if as_json:
+                    click.echo(result.to_json())
+                else:
+                    _print_result(name, result)
+                    click.echo()
+            except Exception as exc:
+                click.echo(f"[scan] error scanning {name}: {exc}", err=True)
+    else:
+        # Fall back to directory scan
+        dirs = app.cfg.skill_dirs()
+        for skill_dir in dirs:
+            if not os.path.isdir(skill_dir):
+                continue
+            for entry in sorted(os.listdir(skill_dir)):
+                path = os.path.join(skill_dir, entry)
+                if not os.path.isdir(path):
+                    continue
+                if not as_json:
+                    click.echo(f"[scan] skill-scanner -> {path}")
+                try:
+                    result = scanner.scan(path)
+                    if app.logger:
+                        app.logger.log_scan(result)
+                    verdicts.append({"name": entry, "result": result})
+                    if as_json:
+                        click.echo(result.to_json())
+                    else:
+                        _print_result(entry, result)
+                        click.echo()
+                except Exception as exc:
+                    click.echo(f"  Error: {exc}")
+
+        if not verdicts:
+            click.echo("No skills found in configured directories:")
+            for d in (dirs if dirs else []):
+                click.echo(f"  {d}")
+            return
+
+    if not as_json and verdicts:
+        clean = sum(1 for v in verdicts if v["result"].is_clean())
+        rejected = sum(
+            1 for v in verdicts
+            if not v["result"].is_clean()
+            and (app.cfg.skill_actions.should_disable(v["result"].max_severity())
+                 or app.cfg.skill_actions.should_quarantine(v["result"].max_severity()))
+        )
+        warnings = len(verdicts) - clean - rejected
+        click.echo(f"Summary: {clean} clean, {warnings} warnings, {rejected} rejected")
+
+
+def _resolve_path(app: AppContext, target: str) -> str | None:
+    """Resolve a skill name or path to an actual directory."""
+    if os.path.isdir(target):
+        return target
+    for candidate in app.cfg.installed_skill_candidates(target):
+        if os.path.isdir(candidate):
+            return candidate
+    return None
+
+
+def _print_result(name: str, result) -> None:
+    click.echo(f"  Skill:    {name}")
+    click.echo(f"  Target:   {result.target}")
+    click.echo(f"  Duration: {result.duration.total_seconds():.2f}s")
+    click.echo(f"  Findings: {len(result.findings)}")
+
+    if result.is_clean():
+        click.secho("  Verdict:  CLEAN", fg="green")
+    else:
+        sev = result.max_severity()
+        color = {"CRITICAL": "red", "HIGH": "red", "MEDIUM": "yellow"}.get(sev, "white")
+        click.secho(f"  Verdict:  {sev} ({len(result.findings)} findings)", fg=color)
+        click.echo()
+        for f in result.findings:
+            sev_color = {"CRITICAL": "red", "HIGH": "red", "MEDIUM": "yellow", "LOW": "cyan"}.get(f.severity, "white")
+            click.secho(f"    [{f.severity}]", fg=sev_color, nl=False)
+            click.echo(f" {f.title}")
+            if f.location:
+                click.echo(f"      Location: {f.location}")
+            if f.description:
+                desc = f.description[:120] + "..." if len(f.description) > 120 else f.description
+                click.echo(f"      {desc}")
+            if f.remediation:
+                click.echo(f"      Fix: {f.remediation}")
+
+
+# ---------------------------------------------------------------------------
+# skill block
+# ---------------------------------------------------------------------------
+
+@skill.command()
+@click.argument("name")
+@click.option("--reason", default="", help="Reason for blocking")
+@pass_ctx
+def block(app: AppContext, name: str, reason: str) -> None:
+    """Add a skill to the install block list.
+
+    Blocked skills are rejected by 'skill install' before any scan.
+    Does not affect already-running skills — use 'skill disable' or
+    'skill quarantine' for that.
+    """
+    from defenseclaw.enforce import PolicyEngine
+
+    skill_name = os.path.basename(name)
+    pe = PolicyEngine(app.store)
+
+    if not reason:
+        reason = "manual block via CLI"
+
+    pe.block("skill", skill_name, reason)
+    skill_path = _resolve_path(app, skill_name)
+    if skill_path:
+        pe.set_source_path("skill", skill_name, skill_path)
+    click.secho(f"[skill] {skill_name!r} added to block list", fg="red")
+
+    if app.logger:
+        app.logger.log_action("skill-block", skill_name, f"reason={reason}")
+
+
+# ---------------------------------------------------------------------------
+# skill allow
+# ---------------------------------------------------------------------------
+
+@skill.command()
+@click.argument("name")
+@click.option("--reason", default="", help="Reason for allowing")
+@pass_ctx
+def allow(app: AppContext, name: str, reason: str) -> None:
+    """Add a skill to the install allow list.
+
+    Allow-listed skills skip the scan gate during install.
+    Adding a skill also removes it from the block list.
+    """
+    from defenseclaw.enforce import PolicyEngine
+
+    skill_name = os.path.basename(name)
+    pe = PolicyEngine(app.store)
+
+    if not reason:
+        reason = "manual allow via CLI"
+
+    pe.allow("skill", skill_name, reason)
+    skill_path = _resolve_path(app, skill_name)
+    if skill_path:
+        pe.set_source_path("skill", skill_name, skill_path)
+    click.secho(f"[skill] {skill_name!r} added to allow list", fg="green")
+
+    if app.logger:
+        app.logger.log_action("skill-allow", skill_name, f"reason={reason}")
+
+
+# ---------------------------------------------------------------------------
+# skill disable (runtime, via gateway RPC)
+# ---------------------------------------------------------------------------
+
+@skill.command()
+@click.argument("name")
+@click.option("--reason", default="", help="Reason for disabling")
+@pass_ctx
+def disable(app: AppContext, name: str, reason: str) -> None:
+    """Disable a skill at runtime via the OpenClaw gateway.
+
+    Sends a skills.update RPC to prevent the agent from using the skill's
+    tools until re-enabled. This is runtime-only — it does not block install
+    or quarantine files.
+
+    Requires the gateway to be running.
+    """
+    from defenseclaw.enforce import PolicyEngine
+    from defenseclaw.gateway import OrchestratorClient
+
+    skill_name = os.path.basename(name)
+
+    client = OrchestratorClient(
+        host=app.cfg.gateway.host,
+        port=app.cfg.gateway.api_port,
+    )
+    try:
+        client.disable_skill(skill_name)
+    except Exception as exc:
+        click.echo(f"error: gateway disable failed: {exc}", err=True)
+        raise SystemExit(1)
+
+    click.echo(f'[skill] {skill_name!r} disabled via gateway RPC')
+
+    if not reason:
+        reason = "manual disable via CLI"
+
+    pe = PolicyEngine(app.store)
+    pe.disable("skill", skill_name, reason)
+
+    if app.logger:
+        app.logger.log_action("skill-disable", skill_name, f"reason={reason}")
+
+
+# ---------------------------------------------------------------------------
+# skill enable (runtime, via gateway RPC)
+# ---------------------------------------------------------------------------
+
+@skill.command()
+@click.argument("name")
+@pass_ctx
+def enable(app: AppContext, name: str) -> None:
+    """Enable a previously disabled skill via the OpenClaw gateway.
+
+    This is a runtime-only action.
+    """
+    from defenseclaw.enforce import PolicyEngine
+    from defenseclaw.gateway import OrchestratorClient
+
+    skill_name = os.path.basename(name)
+
+    client = OrchestratorClient(
+        host=app.cfg.gateway.host,
+        port=app.cfg.gateway.api_port,
+    )
+    try:
+        client.enable_skill(skill_name)
+    except Exception as exc:
+        click.echo(f"error: gateway enable failed: {exc}", err=True)
+        raise SystemExit(1)
+
+    click.echo(f'[skill] {skill_name!r} enabled via gateway RPC')
+
+    pe = PolicyEngine(app.store)
+    pe.enable("skill", skill_name)
+
+    if app.logger:
+        app.logger.log_action("skill-enable", skill_name, "re-enabled via CLI")
+
+
+# ---------------------------------------------------------------------------
+# skill quarantine
+# ---------------------------------------------------------------------------
+
+@skill.command()
+@click.argument("name")
+@click.option("--reason", default="", help="Reason for quarantine")
+@pass_ctx
+def quarantine(app: AppContext, name: str, reason: str) -> None:
+    """Quarantine a skill's files to the quarantine area.
+
+    Moves the skill's directory to ~/.defenseclaw/quarantine/skills/ and records
+    the action. The skill can be restored with 'skill restore'.
+    """
+    from defenseclaw.enforce import PolicyEngine
+    from defenseclaw.enforce.skill_enforcer import SkillEnforcer
+
+    skill_name = os.path.basename(name)
+
+    skill_path = name if os.path.isabs(name) else _resolve_path(app, skill_name)
+    if not skill_path:
+        click.echo(f"error: could not locate skill {skill_name!r} — provide an absolute path", err=True)
+        raise SystemExit(1)
+
+    se = SkillEnforcer(app.cfg.quarantine_dir)
+    dest = se.quarantine(skill_name, skill_path)
+    if dest is None:
+        click.echo(f"error: skill path does not exist: {skill_path}", err=True)
+        raise SystemExit(1)
+
+    click.echo(f'[skill] {skill_name!r} quarantined to {dest}')
+
+    if not reason:
+        reason = "manual quarantine via CLI"
+
+    pe = PolicyEngine(app.store)
+    pe.quarantine("skill", skill_name, reason)
+    pe.set_source_path("skill", skill_name, skill_path)
+
+    if app.logger:
+        app.logger.log_action("skill-quarantine", skill_name, f"reason={reason}, dest={dest}")
+
+
+# ---------------------------------------------------------------------------
+# skill restore
+# ---------------------------------------------------------------------------
+
+@skill.command()
+@click.argument("name")
+@click.option("--path", "restore_path", default="", help="Override restore destination (defaults to original path)")
+@pass_ctx
+def restore(app: AppContext, name: str, restore_path: str) -> None:
+    """Restore a quarantined skill to its original location.
+
+    By default restores to the original path recorded during quarantine.
+    Use --path to override the restore destination.
+    """
+    from defenseclaw.enforce import PolicyEngine
+    from defenseclaw.enforce.skill_enforcer import SkillEnforcer
+
+    skill_name = os.path.basename(name)
+
+    se = SkillEnforcer(app.cfg.quarantine_dir)
+    if not se.is_quarantined(skill_name):
+        click.echo(f"error: {skill_name!r} is not quarantined", err=True)
+        raise SystemExit(1)
+
+    pe = PolicyEngine(app.store)
+
+    if not restore_path:
+        entry = pe.get_action("skill", skill_name)
+        if entry is None or not entry.source_path:
+            click.echo(
+                f"error: no stored path for {skill_name!r} — use --path to specify restore destination",
+                err=True,
+            )
+            raise SystemExit(1)
+        restore_path = entry.source_path
+
+    if not se.restore(skill_name, restore_path):
+        click.echo(f"error: restore failed for {skill_name!r}", err=True)
+        raise SystemExit(1)
+
+    click.echo(f'[skill] {skill_name!r} restored to {restore_path}')
+
+    pe.clear_quarantine("skill", skill_name)
+    pe.set_source_path("skill", skill_name, restore_path)
+
+    if app.logger:
+        app.logger.log_action("skill-restore", skill_name, f"restored to {restore_path}")
+
+
+# ---------------------------------------------------------------------------
+# skill info
+# ---------------------------------------------------------------------------
+
+@skill.command()
+@click.argument("name")
+@click.option("--json", "as_json", is_flag=True, help="Output skill info as JSON")
+@pass_ctx
+def info(app: AppContext, name: str, as_json: bool) -> None:
+    """Show detailed information about a skill.
+
+    Displays merged skill metadata from OpenClaw, latest scan results from the
+    DefenseClaw audit database, and enforcement actions.
+    """
+    skill_name = os.path.basename(name)
+
+    info_map = _get_openclaw_skill_info(skill_name)
+    if info_map is None:
+        info_map = {"name": skill_name}
+
+    scan_map = _build_scan_map(app.store)
+    if skill_name in scan_map:
+        info_map["scan"] = scan_map[skill_name]
+
+    actions_map = _build_actions_map(app.store)
+    if skill_name in actions_map:
+        ae = actions_map[skill_name]
+        if not ae.actions.is_empty():
+            info_map["actions"] = ae.actions.to_dict()
+
+    if as_json:
+        click.echo(json.dumps(info_map, indent=2, default=str))
+        return
+
+    # Text output
+    click.echo(f"Skill:       {info_map.get('name', skill_name)}")
+    if info_map.get("description"):
+        click.echo(f"Description: {info_map['description']}")
+    if info_map.get("source"):
+        click.echo(f"Source:      {info_map['source']}")
+    if info_map.get("baseDir"):
+        click.echo(f"Path:        {info_map['baseDir']}")
+    if info_map.get("filePath"):
+        click.echo(f"File:        {info_map['filePath']}")
+    click.echo(f"Eligible:    {info_map.get('eligible', False)}")
+    click.echo(f"Bundled:     {info_map.get('bundled', False)}")
+    if info_map.get("homepage"):
+        click.echo(f"Homepage:    {info_map['homepage']}")
+
+    scan_data = info_map.get("scan")
+    if scan_data:
+        click.echo()
+        click.echo("Last Scan:")
+        if scan_data.get("clean"):
+            click.secho("  Verdict:  CLEAN", fg="green")
+        else:
+            click.echo(f"  Verdict:  {scan_data.get('total_findings', 0)} {scan_data.get('max_severity', 'INFO')} findings")
+        click.echo(f"  Target:   {scan_data.get('target', '')}")
+
+    actions_data = info_map.get("actions")
+    if actions_data:
+        from defenseclaw.models import ActionState
+        state = ActionState.from_dict(actions_data)
+        if not state.is_empty():
+            click.echo()
+            click.echo(f"Actions:     {state.summary()}")
+
+
+# ---------------------------------------------------------------------------
+# skill install
+# ---------------------------------------------------------------------------
+
+@skill.command()
+@click.argument("name")
+@click.option("--force", is_flag=True, help="Force install (overwrites existing)")
+@click.option("--action", "take_action", is_flag=True, help="Apply skill_actions policy based on scan severity")
+@pass_ctx
+def install(app: AppContext, name: str, force: bool, take_action: bool) -> None:
+    """Install and scan an OpenClaw skill via clawhub.
+
+    By default, install only runs the scan and reports findings — no enforcement
+    actions are taken. Pass --action to apply the configured skill_actions policy
+    (quarantine, disable, block) based on scan severity.
+
+    Use --force to overwrite an existing skill.
+    """
+    from defenseclaw.enforce import PolicyEngine
+    from defenseclaw.enforce.skill_enforcer import SkillEnforcer
+    from defenseclaw.gateway import OrchestratorClient
+    from defenseclaw.scanner.skill import SkillScannerWrapper
+
+    skill_name = os.path.basename(name)
+    pe = PolicyEngine(app.store)
+
+    # Block list check
+    if pe.is_blocked("skill", skill_name):
+        if app.logger:
+            app.logger.log_action("install-rejected", skill_name, "reason=blocked")
+        click.echo(f"error: skill {skill_name!r} is on the block list — run 'defenseclaw skill allow {skill_name}' to unblock", err=True)
+        raise SystemExit(1)
+
+    # Allow list check — skip scan
+    if pe.is_allowed("skill", skill_name):
+        click.echo(f"[install] {skill_name!r} is on the allow list — skipping scan")
+        if app.logger:
+            app.logger.log_action("install-allowed", skill_name, "reason=allow-listed")
+        _run_clawhub_install(skill_name, force)
+        return
+
+    # Install via clawhub
+    click.echo(f"[install] installing {skill_name!r} via clawhub...")
+    _run_clawhub_install(skill_name, force)
+
+    # Locate and scan
+    skill_path = _resolve_path(app, skill_name)
+    if not skill_path:
+        click.echo("[install] warning: could not locate installed skill for scan", err=True)
+        return
+
+    click.echo(f"[install] scanning {skill_path}...")
+    scanner = SkillScannerWrapper(app.cfg.scanners.skill_scanner)
+    try:
+        result = scanner.scan(skill_path)
+    except Exception as exc:
+        click.echo(f"error: scan failed: {exc}", err=True)
+        raise SystemExit(1)
+
+    if app.logger:
+        app.logger.log_scan(result)
+
+    _print_result(skill_name, result)
+
+    if result.is_clean():
+        click.echo(f"[install] {skill_name!r} installed and clean")
+        if app.logger:
+            app.logger.log_action("install-clean", skill_name, "verdict=clean")
+        return
+
+    sev = result.max_severity()
+    detail = f"severity={sev} findings={len(result.findings)}"
+
+    if not take_action:
+        click.echo(
+            f"[install] {len(result.findings)} {sev} findings in {skill_name!r} "
+            f"(no action taken — pass --action to enforce)"
+        )
+        if app.logger:
+            app.logger.log_action("install-warning", skill_name, detail)
+        return
+
+    # --action: apply configured skill_actions policy
+    action_cfg = app.cfg.skill_actions.for_severity(sev)
+    enforcement_reason = f"post-install scan: {len(result.findings)} findings, max={sev}"
+    applied_actions: list[str] = []
+
+    if action_cfg.file == "quarantine":
+        se = SkillEnforcer(app.cfg.quarantine_dir)
+        dest = se.quarantine(skill_name, skill_path)
+        if dest:
+            applied_actions.append(f"quarantined to {dest}")
+            pe.quarantine("skill", skill_name, enforcement_reason)
+        else:
+            click.echo("[install] quarantine failed", err=True)
+
+    if action_cfg.runtime == "disable":
+        client = OrchestratorClient(
+            host=app.cfg.gateway.host,
+            port=app.cfg.gateway.api_port,
+        )
+        try:
+            client.disable_skill(skill_name)
+            applied_actions.append("disabled via gateway")
+            pe.disable("skill", skill_name, enforcement_reason)
+        except Exception as exc:
+            click.echo(f"[install] gateway disable failed: {exc}", err=True)
+
+    if action_cfg.install == "block":
+        pe.block("skill", skill_name, enforcement_reason)
+        applied_actions.append("added to block list")
+
+    if action_cfg.install == "allow":
+        pe.allow("skill", skill_name, enforcement_reason)
+        applied_actions.append("added to allow list")
+
+    pe.set_source_path("skill", skill_name, skill_path)
+
+    if applied_actions:
+        actions_str = ", ".join(applied_actions)
+        click.echo(f"[install] {skill_name!r}: {actions_str} ({detail})")
+        if app.logger:
+            app.logger.log_action("install-enforced", skill_name, f"{detail}; {actions_str}")
+        click.echo(f"error: skill {skill_name!r} had {sev} findings — actions applied: {actions_str}", err=True)
+        raise SystemExit(1)
+
+    click.echo(f"[install] warning: {len(result.findings)} {sev} findings in {skill_name!r}")
+    if app.logger:
+        app.logger.log_action("install-warning", skill_name, detail)
+
+
+def _run_clawhub_install(skill_name: str, force: bool) -> None:
+    args = ["npx", "clawhub", "install", skill_name]
+    if force:
+        args.append("--force")
+    try:
+        subprocess.run(args, check=True)
+    except (subprocess.CalledProcessError, FileNotFoundError) as exc:
+        click.echo(f"error: clawhub install failed: {exc}", err=True)
+        raise SystemExit(1)

@@ -4,11 +4,35 @@ Get DefenseClaw running in under 5 minutes.
 
 ## Prerequisites
 
-- **Go 1.22+** — to build from source
-- **Python 3.11+** — for scanner dependencies
+- **Python 3.10+** — for the CLI and scanner dependencies
 - **[uv](https://docs.astral.sh/uv/)** (recommended) or pip
+- **Go 1.22+** — only needed if building the Go binary
 
-## 1. Build
+## Option A: Python CLI (Recommended)
+
+The Python CLI uses the native `cisco-ai-skill-scanner` SDK directly — no subprocess overhead.
+
+```bash
+git clone https://github.com/defenseclaw/defenseclaw.git
+cd defenseclaw
+
+# Create virtual environment and install (using uv — recommended)
+uv venv .venv
+source .venv/bin/activate  # On Windows: .venv\Scripts\activate
+uv pip install -e cli
+
+# Or using standard pip
+python3 -m venv .venv
+source .venv/bin/activate
+pip install -e cli
+
+# Verify installation
+defenseclaw --help
+```
+
+## Option B: Go CLI
+
+Build from source if you need the Go binary (required for TUI and sidecar daemon).
 
 ```bash
 git clone https://github.com/defenseclaw/defenseclaw.git
@@ -42,42 +66,37 @@ Use `--skip-install` to skip this step.
 ## 3. First Scan
 
 ```bash
-# Scan a skill
-defenseclaw scan skill ./path/to/skill/
+# Scan a skill (Python CLI uses native SDK)
+defenseclaw skill scan ./path/to/skill/
+
+# Scan all skills in configured directories
+defenseclaw skill scan all
 
 # Scan an MCP server
-defenseclaw scan mcp https://mcp-server.example.com
+defenseclaw mcp scan https://mcp-server.example.com
 
 # Generate AI bill of materials
-defenseclaw scan aibom .
-
-# Run all scanners against current directory
-defenseclaw scan
+defenseclaw aibom .
 ```
 
 ## 4. Block/Allow Enforcement
 
 ```bash
-# Block a skill (quarantines files + updates sandbox policy)
-defenseclaw block skill ./malicious-skill --reason "exfil pattern"
+# Block a skill
+defenseclaw skill block malicious-skill --reason "exfil pattern"
 
-# Block an MCP server (adds to network deny-list)
-defenseclaw block mcp https://shady.example.com --reason "hidden instructions"
+# Block an MCP server
+defenseclaw mcp block https://shady.example.com --reason "hidden instructions"
 
-# View what's blocked
-defenseclaw list blocked
+# View what's blocked/allowed
+defenseclaw skill list
+defenseclaw mcp list
 
-# Allow a previously blocked skill (re-scans first, rejects if still HIGH/CRITICAL)
-defenseclaw allow skill ./malicious-skill
+# Allow a skill
+defenseclaw skill allow trusted-skill --reason "manually verified"
 
-# Allow without re-scanning
-defenseclaw allow skill ./malicious-skill --skip-rescan --reason "manually verified"
-
-# View allow list
-defenseclaw list allowed
-
-# Emergency quarantine (block + move files in one step)
-defenseclaw quarantine ./risky-skill
+# Allow an MCP server
+defenseclaw mcp allow https://trusted.example.com
 ```
 
 ## 5. Audit Log
@@ -92,11 +111,13 @@ defenseclaw audit -n 50
 
 Every action (scan, block, allow, quarantine, init) is logged.
 
-## 6. Terminal Dashboard
+## 6. Terminal Dashboard (Go CLI only)
+
+The TUI requires the Go binary. Build it first with `make build`.
 
 ```bash
 # Launch the interactive TUI
-defenseclaw tui
+./defenseclaw tui
 ```
 
 The TUI has three tabs:
@@ -198,8 +219,19 @@ export DEFENSECLAW_SPLUNK_HEC_TOKEN="your-hec-token"
 With `enabled: true`, every scan, block, allow, deploy, and quarantine event is
 streamed to Splunk as it happens.
 
-## 11. Next Steps
+## 11. Running Tests
 
-- `defenseclaw tui` — interactive terminal dashboard
+```bash
+# Python CLI tests
+source .venv/bin/activate
+python3 -m unittest discover -s cli/tests -v
+
+# Go tests
+make test
+```
+
+## 12. Next Steps
+
+- `defenseclaw tui` — interactive terminal dashboard (Go CLI)
 - See [CLI Reference](CLI.md) for all commands and flags.
 - See [Architecture](ARCHITECTURE.md) for system design details.

@@ -1,0 +1,136 @@
+"""Skill scanner — native SDK integration.
+
+Uses the cisco-ai-skill-scanner Python SDK directly instead of shelling out
+to the skill-scanner CLI.  Maps SDK ScanResult/Finding → DefenseClaw models.
+"""
+
+from __future__ import annotations
+
+import os
+import sys
+from datetime import datetime, timedelta, timezone
+from typing import TYPE_CHECKING
+
+from defenseclaw.config import SkillScannerConfig
+from defenseclaw.models import Finding, ScanResult
+
+if TYPE_CHECKING:
+    pass
+
+
+class SkillScannerWrapper:
+    """Wraps the cisco-ai-skill-scanner SDK."""
+
+    def __init__(self, config: SkillScannerConfig) -> None:
+        self.config = config
+
+    def name(self) -> str:
+        return "skill-scanner"
+
+    def scan(self, target: str) -> ScanResult:
+        import time
+
+        try:
+            from skill_scanner import SkillScanner
+            from skill_scanner.core.analyzer_factory import build_analyzers
+            from skill_scanner.core.scan_policy import ScanPolicy
+        except ImportError:
+            print(
+                "error: cisco-ai-skill-scanner not installed.\n"
+                "  Install with: pip install cisco-ai-skill-scanner",
+                file=sys.stderr,
+            )
+            raise SystemExit(1)
+
+        cfg = self.config
+        self._inject_env()
+
+        policy = ScanPolicy.default()
+        if cfg.policy:
+            try:
+                policy = ScanPolicy.from_file(cfg.policy)
+            except Exception:
+                presets = {"strict", "balanced", "permissive"}
+                if cfg.policy in presets:
+                    policy = ScanPolicy.from_preset(cfg.policy)
+
+        build_kwargs: dict = {"policy": policy}
+        if cfg.use_behavioral:
+            build_kwargs["use_behavioral"] = True
+        if cfg.use_llm:
+            build_kwargs["use_llm"] = True
+            if cfg.llm_model:
+                build_kwargs["llm_model"] = cfg.llm_model
+            if cfg.llm_api_key:
+                build_kwargs["llm_api_key"] = cfg.llm_api_key
+            elif os.environ.get("SKILL_SCANNER_LLM_API_KEY"):
+                build_kwargs["llm_api_key"] = os.environ["SKILL_SCANNER_LLM_API_KEY"]
+            if cfg.llm_consensus_runs > 0:
+                build_kwargs["llm_consensus_runs"] = cfg.llm_consensus_runs
+        if cfg.enable_meta:
+            build_kwargs["enable_meta"] = True
+        if cfg.use_trigger:
+            build_kwargs["use_trigger"] = True
+        if cfg.use_virustotal:
+            build_kwargs["use_virustotal"] = True
+        if cfg.use_aidefense:
+            build_kwargs["use_aidefense"] = True
+
+        analyzers = build_analyzers(**build_kwargs)
+        scanner = SkillScanner(analyzers=analyzers, policy=policy)
+
+        start = time.monotonic()
+        sdk_result = scanner.scan_skill(str(target), lenient=cfg.lenient)
+        elapsed = time.monotonic() - start
+
+        return self._convert(sdk_result, target, elapsed)
+
+    def _inject_env(self) -> None:
+        """Inject API keys from config into env if not already set."""
+        cfg = self.config
+        mappings = [
+            ("SKILL_SCANNER_LLM_API_KEY", cfg.llm_api_key),
+            ("SKILL_SCANNER_LLM_MODEL", cfg.llm_model),
+            ("VIRUSTOTAL_API_KEY", cfg.virustotal_api_key),
+            ("AI_DEFENSE_API_KEY", cfg.aidefense_api_key),
+        ]
+        for env_var, value in mappings:
+            if value and env_var not in os.environ:
+                os.environ[env_var] = value
+
+    def _convert(self, sdk_result: object, target: str, elapsed: float) -> ScanResult:
+        """Convert SDK ScanResult → DefenseClaw ScanResult."""
+        findings: list[Finding] = []
+        for sf in getattr(sdk_result, "findings", []):
+            location = getattr(sf, "file_path", "") or ""
+            line = getattr(sf, "line_number", None)
+            if line and location:
+                location = f"{location}:{line}"
+
+            tags: list[str] = []
+            category = getattr(sf, "category", None)
+            if category:
+                cat_name = category.name if hasattr(category, "name") else str(category)
+                tags.append(cat_name)
+
+            severity = getattr(sf, "severity", None)
+            sev_str = severity.name if hasattr(severity, "name") else str(severity)
+
+            findings.append(Finding(
+                id=getattr(sf, "id", "") or getattr(sf, "rule_id", ""),
+                severity=sev_str.upper(),
+                title=getattr(sf, "title", ""),
+                description=getattr(sf, "description", ""),
+                location=location,
+                remediation=getattr(sf, "remediation", "") or "",
+                scanner=getattr(sf, "analyzer", "") or "skill-scanner",
+                tags=tags,
+            ))
+
+        return ScanResult(
+            scanner="skill-scanner",
+            target=target,
+            timestamp=datetime.now(timezone.utc),
+            findings=findings,
+            duration=timedelta(seconds=elapsed),
+        )
