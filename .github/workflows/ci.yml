@@ -125,3 +125,15 @@ jobs:
         with:
           version: latest
       - run: opa test policies/rego/ -v
+
+  make-test:
+    name: make test (unified)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-go@v5
+        with:
+          go-version-file: go.mod
+      - uses: astral-sh/setup-uv@v4
+      - run: make pycli
+      - run: make test
