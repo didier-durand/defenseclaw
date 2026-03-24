@@ -29,6 +29,13 @@ type APIServer struct {
 	logger      *audit.Logger
 	addr        string
 	scannerCfg  *config.Config
+	otel        *telemetry.Provider
+}
+
+// SetOTelProvider attaches the OTel provider so guardrail events
+// can be recorded as metrics.
+func (a *APIServer) SetOTelProvider(p *telemetry.Provider) {
+	a.otel = p
 }
 
 // NewAPIServer creates the REST API server bound to the given address.
@@ -58,6 +65,7 @@ func (a *APIServer) Run(ctx context.Context) error {
 	mux.HandleFunc("/tools/catalog", a.handleToolsCatalog)
 	mux.HandleFunc("/v1/skill/scan", a.handleSkillScan)
 	mux.HandleFunc("/v1/skill/fetch", a.handleSkillFetch)
+	mux.HandleFunc("/v1/guardrail/event", a.handleGuardrailEvent)
 
 	srv := &http.Server{
 		Addr:    a.addr,
@@ -419,6 +427,64 @@ func (a *APIServer) handleSkillFetch(w http.ResponseWriter, r *http.Request) {
 
 		return nil
 	})
+}
+
+// ---------------------------------------------------------------------------
+// POST /v1/guardrail/event — receive verdict telemetry from the Python guardrail
+// ---------------------------------------------------------------------------
+
+type guardrailEventRequest struct {
+	Direction string   `json:"direction"`
+	Model     string   `json:"model"`
+	Action    string   `json:"action"`
+	Severity  string   `json:"severity"`
+	Reason    string   `json:"reason"`
+	Findings  []string `json:"findings"`
+	ElapsedMs float64  `json:"elapsed_ms"`
+	TokensIn  *int64   `json:"tokens_in,omitempty"`
+	TokensOut *int64   `json:"tokens_out,omitempty"`
+}
+
+func (a *APIServer) handleGuardrailEvent(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodPost {
+		http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
+		return
+	}
+
+	var req guardrailEventRequest
+	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+		a.writeJSON(w, http.StatusBadRequest, map[string]string{"error": "invalid JSON body"})
+		return
+	}
+	if req.Direction == "" || req.Action == "" || req.Severity == "" {
+		a.writeJSON(w, http.StatusBadRequest, map[string]string{"error": "direction, action, and severity are required"})
+		return
+	}
+
+	details := fmt.Sprintf("direction=%s action=%s severity=%s findings=%d elapsed_ms=%.1f",
+		req.Direction, req.Action, req.Severity, len(req.Findings), req.ElapsedMs)
+	if req.Reason != "" {
+		details += fmt.Sprintf(" reason=%s", truncate(req.Reason, 120))
+	}
+	_ = a.logger.LogAction("guardrail-verdict", req.Model, details)
+
+	if a.otel != nil {
+		ctx := r.Context()
+		a.otel.RecordGuardrailEvaluation(ctx, "litellm-guardrail", req.Action)
+		a.otel.RecordGuardrailLatency(ctx, "litellm-guardrail", req.ElapsedMs)
+		if req.TokensIn != nil || req.TokensOut != nil {
+			var tIn, tOut int64
+			if req.TokensIn != nil {
+				tIn = *req.TokensIn
+			}
+			if req.TokensOut != nil {
+				tOut = *req.TokensOut
+			}
+			a.otel.RecordLLMTokens(ctx, "litellm", tIn, tOut)
+		}
+	}
+
+	a.writeJSON(w, http.StatusOK, map[string]string{"status": "ok"})
 }
 
 func (a *APIServer) writeJSON(w http.ResponseWriter, status int, v interface{}) {

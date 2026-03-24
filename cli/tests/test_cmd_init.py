@@ -28,10 +28,11 @@ class TestInitCommand(unittest.TestCase):
         self.assertIn("Initialize DefenseClaw environment", result.output)
 
     @patch("defenseclaw.commands.cmd_init.shutil.which", return_value=None)
+    @patch("defenseclaw.commands.cmd_init._install_guardrail")
     @patch("defenseclaw.commands.cmd_init._install_scanners")
     @patch("defenseclaw.config.detect_environment", return_value="macos")
     @patch("defenseclaw.config.default_data_path")
-    def test_init_skip_install_creates_dirs(self, mock_path, _mock_env, mock_scanners, _mock_which):
+    def test_init_skip_install_creates_dirs(self, mock_path, _mock_env, mock_scanners, _mock_guardrail, _mock_which):
         from pathlib import Path
         mock_path.return_value = Path(self.tmp_dir)
 
@@ -49,10 +50,11 @@ class TestInitCommand(unittest.TestCase):
         self.assertTrue(os.path.isfile(config_file))
 
     @patch("defenseclaw.commands.cmd_init.shutil.which", return_value=None)
+    @patch("defenseclaw.commands.cmd_init._install_guardrail")
     @patch("defenseclaw.commands.cmd_init._install_scanners")
     @patch("defenseclaw.config.detect_environment", return_value="macos")
     @patch("defenseclaw.config.default_data_path")
-    def test_init_logs_action(self, mock_path, _mock_env, mock_scanners, _mock_which):
+    def test_init_logs_action(self, mock_path, _mock_env, mock_scanners, _mock_guardrail, _mock_which):
         from pathlib import Path
         mock_path.return_value = Path(self.tmp_dir)
 
@@ -70,10 +72,11 @@ class TestInitCommand(unittest.TestCase):
         store.close()
 
     @patch("defenseclaw.commands.cmd_init.shutil.which", return_value=None)
+    @patch("defenseclaw.commands.cmd_init._install_guardrail")
     @patch("defenseclaw.commands.cmd_init._install_scanners")
     @patch("defenseclaw.config.detect_environment", return_value="macos")
     @patch("defenseclaw.config.default_data_path")
-    def test_init_shows_openshell_macos_message(self, mock_path, _mock_env, mock_scanners, _mock_which):
+    def test_init_shows_openshell_macos_message(self, mock_path, _mock_env, mock_scanners, _mock_guardrail, _mock_which):
         from pathlib import Path
         mock_path.return_value = Path(self.tmp_dir)
 
@@ -94,10 +97,11 @@ class TestInitPreservesExistingConfig(unittest.TestCase):
         shutil.rmtree(self.tmp_dir, ignore_errors=True)
 
     @patch("defenseclaw.commands.cmd_init.shutil.which", return_value=None)
+    @patch("defenseclaw.commands.cmd_init._install_guardrail")
     @patch("defenseclaw.commands.cmd_init._install_scanners")
     @patch("defenseclaw.config.detect_environment", return_value="macos")
     @patch("defenseclaw.config.default_data_path")
-    def test_init_preserves_existing_config(self, mock_path, _mock_env, mock_scanners, _mock_which):
+    def test_init_preserves_existing_config(self, mock_path, _mock_env, mock_scanners, _mock_guardrail, _mock_which):
         from pathlib import Path
         mock_path.return_value = Path(self.tmp_dir)
 
@@ -135,10 +139,11 @@ class TestInitPreservesExistingConfig(unittest.TestCase):
         self.assertEqual(reloaded["gateway"]["port"], 99999)
 
     @patch("defenseclaw.commands.cmd_init.shutil.which", return_value=None)
+    @patch("defenseclaw.commands.cmd_init._install_guardrail")
     @patch("defenseclaw.commands.cmd_init._install_scanners")
     @patch("defenseclaw.config.detect_environment", return_value="macos")
     @patch("defenseclaw.config.default_data_path")
-    def test_init_creates_new_defaults_when_no_config(self, mock_path, _mock_env, mock_scanners, _mock_which):
+    def test_init_creates_new_defaults_when_no_config(self, mock_path, _mock_env, mock_scanners, _mock_guardrail, _mock_which):
         from pathlib import Path
         mock_path.return_value = Path(self.tmp_dir)
 
@@ -159,10 +164,11 @@ class TestInitDoesNotCreateExternalDirs(unittest.TestCase):
         shutil.rmtree(self.tmp_dir, ignore_errors=True)
 
     @patch("defenseclaw.commands.cmd_init.shutil.which", return_value=None)
+    @patch("defenseclaw.commands.cmd_init._install_guardrail")
     @patch("defenseclaw.commands.cmd_init._install_scanners")
     @patch("defenseclaw.config.detect_environment", return_value="macos")
     @patch("defenseclaw.config.default_data_path")
-    def test_init_does_not_create_openclaw_dirs(self, mock_path, _mock_env, mock_scanners, _mock_which):
+    def test_init_does_not_create_openclaw_dirs(self, mock_path, _mock_env, mock_scanners, _mock_guardrail, _mock_which):
         from pathlib import Path
         mock_path.return_value = Path(self.tmp_dir)
 
@@ -170,13 +176,6 @@ class TestInitDoesNotCreateExternalDirs(unittest.TestCase):
         result = self.runner.invoke(init_cmd, ["--skip-install"], obj=app)
         self.assertEqual(result.exit_code, 0, result.output)
 
-        home = os.path.expanduser("~")
-        openclaw_dir = os.path.join(home, ".openclaw")
-
-        # If .openclaw was created by this init run, that's the bug.
-        # We can't easily assert it was *not* created since it may already exist,
-        # but we can verify that no new subdirectories were created inside it
-        # by checking the init only created dirs under our tmp data dir.
         for root, dirs, _files in os.walk(self.tmp_dir):
             for d in dirs:
                 full = os.path.join(root, d)
@@ -187,10 +186,11 @@ class TestInitDoesNotCreateExternalDirs(unittest.TestCase):
                 )
 
     @patch("defenseclaw.commands.cmd_init.shutil.which", return_value=None)
+    @patch("defenseclaw.commands.cmd_init._install_guardrail")
     @patch("defenseclaw.commands.cmd_init._install_scanners")
     @patch("defenseclaw.config.detect_environment", return_value="macos")
     @patch("defenseclaw.config.default_data_path")
-    def test_init_creates_defenseclaw_dirs(self, mock_path, _mock_env, mock_scanners, _mock_which):
+    def test_init_creates_defenseclaw_dirs(self, mock_path, _mock_env, mock_scanners, _mock_guardrail, _mock_which):
         from pathlib import Path
         mock_path.return_value = Path(self.tmp_dir)
 

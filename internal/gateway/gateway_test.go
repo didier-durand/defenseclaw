@@ -17,8 +17,13 @@ import (
 	"testing"
 	"time"
 
+	"go.opentelemetry.io/otel/attribute"
+	sdkmetric "go.opentelemetry.io/otel/sdk/metric"
+	"go.opentelemetry.io/otel/sdk/metric/metricdata"
+
 	"github.com/defenseclaw/defenseclaw/internal/audit"
 	"github.com/defenseclaw/defenseclaw/internal/config"
+	"github.com/defenseclaw/defenseclaw/internal/telemetry"
 )
 
 func testStoreAndLogger(t *testing.T) (*audit.Store, *audit.Logger) {
@@ -223,7 +228,7 @@ func TestLiteLLMProcessDisabled(t *testing.T) {
 
 	cfg := &config.GuardrailConfig{Enabled: false}
 	health := NewSidecarHealth()
-	llm := NewLiteLLMProcess(cfg, logger, health)
+	llm := NewLiteLLMProcess(cfg, logger, health, 0)
 
 	ctx, cancel := context.WithTimeout(context.Background(), 100*time.Millisecond)
 	defer cancel()
@@ -251,7 +256,7 @@ func TestLiteLLMProcessBinaryNotFound(t *testing.T) {
 		GuardrailDir:  t.TempDir(),
 	}
 	health := NewSidecarHealth()
-	llm := NewLiteLLMProcess(cfg, logger, health)
+	llm := NewLiteLLMProcess(cfg, logger, health, 0)
 
 	// Override PATH so litellm is definitely not found
 	t.Setenv("PATH", t.TempDir())
@@ -291,7 +296,7 @@ func TestLiteLLMProcessMissingConfig(t *testing.T) {
 		GuardrailDir:  tmpDir,
 	}
 	health := NewSidecarHealth()
-	llm := NewLiteLLMProcess(cfg, logger, health)
+	llm := NewLiteLLMProcess(cfg, logger, health, 0)
 
 	ctx, cancel := context.WithTimeout(context.Background(), 100*time.Millisecond)
 	defer cancel()
@@ -1840,4 +1845,367 @@ func TestRouterAuditRedaction(t *testing.T) {
 	if !found {
 		t.Error("expected gateway-tool-call audit event")
 	}
+}
+
+// ---------------------------------------------------------------------------
+// Guardrail event endpoint tests (LiteLLM telemetry)
+// ---------------------------------------------------------------------------
+
+func TestHandleGuardrailEvent(t *testing.T) {
+	store, logger := testStoreAndLogger(t)
+	api := &APIServer{health: NewSidecarHealth(), logger: logger, store: store}
+
+	body, _ := json.Marshal(guardrailEventRequest{
+		Direction: "prompt",
+		Model:     "gpt-4",
+		Action:    "allow",
+		Severity:  "NONE",
+		Reason:    "",
+		Findings:  []string{},
+		ElapsedMs: 1.5,
+	})
+	req := httptest.NewRequest(http.MethodPost, "/v1/guardrail/event", bytes.NewReader(body))
+	w := httptest.NewRecorder()
+	api.handleGuardrailEvent(w, req)
+
+	if w.Result().StatusCode != http.StatusOK {
+		t.Errorf("status = %d, want %d", w.Result().StatusCode, http.StatusOK)
+	}
+
+	var resp map[string]string
+	json.NewDecoder(w.Result().Body).Decode(&resp)
+	if resp["status"] != "ok" {
+		t.Errorf("response status = %q, want ok", resp["status"])
+	}
+
+	events, _ := store.ListEvents(10)
+	found := false
+	for _, e := range events {
+		if e.Action == "guardrail-verdict" {
+			found = true
+			if !strings.Contains(e.Details, "direction=prompt") {
+				t.Errorf("details missing direction: %s", e.Details)
+			}
+		}
+	}
+	if !found {
+		t.Error("expected guardrail-verdict audit event")
+	}
+}
+
+func TestHandleGuardrailEventBadJSON(t *testing.T) {
+	_, logger := testStoreAndLogger(t)
+	api := &APIServer{health: NewSidecarHealth(), logger: logger}
+
+	req := httptest.NewRequest(http.MethodPost, "/v1/guardrail/event", bytes.NewBufferString("{bad"))
+	w := httptest.NewRecorder()
+	api.handleGuardrailEvent(w, req)
+
+	if w.Result().StatusCode != http.StatusBadRequest {
+		t.Errorf("status = %d, want %d", w.Result().StatusCode, http.StatusBadRequest)
+	}
+}
+
+func TestHandleGuardrailEventMissingFields(t *testing.T) {
+	_, logger := testStoreAndLogger(t)
+	api := &APIServer{health: NewSidecarHealth(), logger: logger}
+
+	body, _ := json.Marshal(guardrailEventRequest{Direction: "prompt"})
+	req := httptest.NewRequest(http.MethodPost, "/v1/guardrail/event", bytes.NewReader(body))
+	w := httptest.NewRecorder()
+	api.handleGuardrailEvent(w, req)
+
+	if w.Result().StatusCode != http.StatusBadRequest {
+		t.Errorf("status = %d, want %d", w.Result().StatusCode, http.StatusBadRequest)
+	}
+}
+
+func TestHandleGuardrailEventMethodNotAllowed(t *testing.T) {
+	api := &APIServer{health: NewSidecarHealth()}
+
+	req := httptest.NewRequest(http.MethodGet, "/v1/guardrail/event", nil)
+	w := httptest.NewRecorder()
+	api.handleGuardrailEvent(w, req)
+
+	if w.Result().StatusCode != http.StatusMethodNotAllowed {
+		t.Errorf("status = %d, want %d", w.Result().StatusCode, http.StatusMethodNotAllowed)
+	}
+}
+
+// ---------------------------------------------------------------------------
+// LiteLLM buildEnv: DEFENSECLAW_API_PORT injection tests
+// ---------------------------------------------------------------------------
+
+func TestBuildEnvIncludesAPIPort(t *testing.T) {
+	cfg := &config.GuardrailConfig{
+		GuardrailDir: "/test/guardrails",
+		Mode:         "observe",
+	}
+	llm := &LiteLLMProcess{cfg: cfg, apiPort: 18790}
+	env := llm.buildEnv()
+
+	found := false
+	for _, e := range env {
+		if e == "DEFENSECLAW_API_PORT=18790" {
+			found = true
+			break
+		}
+	}
+	if !found {
+		t.Error("buildEnv() should include DEFENSECLAW_API_PORT=18790")
+	}
+}
+
+func TestBuildEnvOmitsAPIPortWhenZero(t *testing.T) {
+	cfg := &config.GuardrailConfig{
+		GuardrailDir: "/test/guardrails",
+		Mode:         "observe",
+	}
+	llm := &LiteLLMProcess{cfg: cfg, apiPort: 0}
+	env := llm.buildEnv()
+
+	for _, e := range env {
+		if strings.HasPrefix(e, "DEFENSECLAW_API_PORT=") {
+			t.Errorf("buildEnv() should not include DEFENSECLAW_API_PORT when port=0, got %q", e)
+		}
+	}
+}
+
+// ---------------------------------------------------------------------------
+// Guardrail event handler → OTel integration tests
+// ---------------------------------------------------------------------------
+
+func TestHandleGuardrailEvent_OTelMetricsRecorded(t *testing.T) {
+	store, logger := testStoreAndLogger(t)
+	reader := sdkmetric.NewManualReader()
+	otelProvider, err := telemetry.NewProviderForTest(reader)
+	if err != nil {
+		t.Fatalf("NewProviderForTest: %v", err)
+	}
+	defer otelProvider.Shutdown(context.Background())
+
+	api := &APIServer{health: NewSidecarHealth(), logger: logger, store: store}
+	api.SetOTelProvider(otelProvider)
+
+	tokIn := int64(250)
+	tokOut := int64(120)
+	body, _ := json.Marshal(guardrailEventRequest{
+		Direction: "prompt",
+		Model:     "gpt-4",
+		Action:    "block",
+		Severity:  "HIGH",
+		Reason:    "malicious prompt injection detected",
+		Findings:  []string{"prompt-injection"},
+		ElapsedMs: 12.5,
+		TokensIn:  &tokIn,
+		TokensOut: &tokOut,
+	})
+
+	req := httptest.NewRequest(http.MethodPost, "/v1/guardrail/event", bytes.NewReader(body))
+	w := httptest.NewRecorder()
+	api.handleGuardrailEvent(w, req)
+
+	if w.Result().StatusCode != http.StatusOK {
+		t.Fatalf("status = %d, want %d; body: %s", w.Result().StatusCode, http.StatusOK, w.Body.String())
+	}
+
+	var rm metricdata.ResourceMetrics
+	if err := reader.Collect(context.Background(), &rm); err != nil {
+		t.Fatalf("Collect: %v", err)
+	}
+
+	evalMetric := findMetric(rm, "defenseclaw.guardrail.evaluations")
+	if evalMetric == nil {
+		t.Fatal("expected defenseclaw.guardrail.evaluations metric")
+	}
+	evalSum, ok := evalMetric.Data.(metricdata.Sum[int64])
+	if !ok {
+		t.Fatalf("expected Sum[int64], got %T", evalMetric.Data)
+	}
+	blockVal := counterByAttr(evalSum, "guardrail.action_taken", "block")
+	if blockVal != 1 {
+		t.Errorf("guardrail evaluations block = %d, want 1", blockVal)
+	}
+
+	latencyMetric := findMetric(rm, "defenseclaw.guardrail.latency")
+	if latencyMetric == nil {
+		t.Fatal("expected defenseclaw.guardrail.latency metric")
+	}
+	latHist, ok := latencyMetric.Data.(metricdata.Histogram[float64])
+	if !ok {
+		t.Fatalf("expected Histogram[float64], got %T", latencyMetric.Data)
+	}
+	if len(latHist.DataPoints) == 0 {
+		t.Fatal("expected at least one histogram data point")
+	}
+	if latHist.DataPoints[0].Sum != 12.5 {
+		t.Errorf("latency sum = %f, want 12.5", latHist.DataPoints[0].Sum)
+	}
+
+	tokenMetric := findMetric(rm, "defenseclaw.llm.tokens")
+	if tokenMetric == nil {
+		t.Fatal("expected defenseclaw.llm.tokens metric")
+	}
+	tokenSum, ok := tokenMetric.Data.(metricdata.Sum[int64])
+	if !ok {
+		t.Fatalf("expected Sum[int64], got %T", tokenMetric.Data)
+	}
+	promptTok := counterByAttr(tokenSum, "token.type", "prompt")
+	compTok := counterByAttr(tokenSum, "token.type", "completion")
+	if promptTok != 250 {
+		t.Errorf("prompt tokens = %d, want 250", promptTok)
+	}
+	if compTok != 120 {
+		t.Errorf("completion tokens = %d, want 120", compTok)
+	}
+}
+
+func TestHandleGuardrailEvent_OTelNoTokensSkipsLLMMetric(t *testing.T) {
+	store, logger := testStoreAndLogger(t)
+	reader := sdkmetric.NewManualReader()
+	otelProvider, err := telemetry.NewProviderForTest(reader)
+	if err != nil {
+		t.Fatalf("NewProviderForTest: %v", err)
+	}
+	defer otelProvider.Shutdown(context.Background())
+
+	api := &APIServer{health: NewSidecarHealth(), logger: logger, store: store}
+	api.SetOTelProvider(otelProvider)
+
+	body, _ := json.Marshal(guardrailEventRequest{
+		Direction: "completion",
+		Model:     "claude-3",
+		Action:    "allow",
+		Severity:  "NONE",
+		ElapsedMs: 3.2,
+	})
+
+	req := httptest.NewRequest(http.MethodPost, "/v1/guardrail/event", bytes.NewReader(body))
+	w := httptest.NewRecorder()
+	api.handleGuardrailEvent(w, req)
+
+	if w.Result().StatusCode != http.StatusOK {
+		t.Fatalf("status = %d, want %d", w.Result().StatusCode, http.StatusOK)
+	}
+
+	var rm metricdata.ResourceMetrics
+	if err := reader.Collect(context.Background(), &rm); err != nil {
+		t.Fatalf("Collect: %v", err)
+	}
+
+	evalMetric := findMetric(rm, "defenseclaw.guardrail.evaluations")
+	if evalMetric == nil {
+		t.Fatal("expected defenseclaw.guardrail.evaluations metric")
+	}
+
+	tokenMetric := findMetric(rm, "defenseclaw.llm.tokens")
+	if tokenMetric != nil {
+		tokenSum, ok := tokenMetric.Data.(metricdata.Sum[int64])
+		if ok {
+			total := int64(0)
+			for _, dp := range tokenSum.DataPoints {
+				total += dp.Value
+			}
+			if total != 0 {
+				t.Errorf("expected 0 token metrics when tokens_in/out are nil, got %d", total)
+			}
+		}
+	}
+}
+
+func TestHandleGuardrailEvent_OTelMultipleEvents(t *testing.T) {
+	store, logger := testStoreAndLogger(t)
+	reader := sdkmetric.NewManualReader()
+	otelProvider, err := telemetry.NewProviderForTest(reader)
+	if err != nil {
+		t.Fatalf("NewProviderForTest: %v", err)
+	}
+	defer otelProvider.Shutdown(context.Background())
+
+	api := &APIServer{health: NewSidecarHealth(), logger: logger, store: store}
+	api.SetOTelProvider(otelProvider)
+
+	events := []guardrailEventRequest{
+		{Direction: "prompt", Model: "gpt-4", Action: "allow", Severity: "NONE", ElapsedMs: 1.0},
+		{Direction: "prompt", Model: "gpt-4", Action: "block", Severity: "HIGH", ElapsedMs: 5.0},
+		{Direction: "completion", Model: "gpt-4", Action: "allow", Severity: "NONE", ElapsedMs: 2.0},
+	}
+
+	for _, evt := range events {
+		body, _ := json.Marshal(evt)
+		req := httptest.NewRequest(http.MethodPost, "/v1/guardrail/event", bytes.NewReader(body))
+		w := httptest.NewRecorder()
+		api.handleGuardrailEvent(w, req)
+		if w.Result().StatusCode != http.StatusOK {
+			t.Fatalf("status = %d for event %+v", w.Result().StatusCode, evt)
+		}
+	}
+
+	var rm metricdata.ResourceMetrics
+	if err := reader.Collect(context.Background(), &rm); err != nil {
+		t.Fatalf("Collect: %v", err)
+	}
+
+	evalMetric := findMetric(rm, "defenseclaw.guardrail.evaluations")
+	if evalMetric == nil {
+		t.Fatal("expected defenseclaw.guardrail.evaluations metric")
+	}
+
+	evalSum, ok := evalMetric.Data.(metricdata.Sum[int64])
+	if !ok {
+		t.Fatalf("expected Sum[int64], got %T", evalMetric.Data)
+	}
+
+	blockCount := counterByAttr(evalSum, "guardrail.action_taken", "block")
+	allowCount := counterByAttr(evalSum, "guardrail.action_taken", "allow")
+	if blockCount != 1 {
+		t.Errorf("block = %d, want 1", blockCount)
+	}
+	if allowCount != 2 {
+		t.Errorf("allow = %d, want 2", allowCount)
+	}
+
+	latencyMetric := findMetric(rm, "defenseclaw.guardrail.latency")
+	if latencyMetric == nil {
+		t.Fatal("expected defenseclaw.guardrail.latency metric")
+	}
+	latHist, ok := latencyMetric.Data.(metricdata.Histogram[float64])
+	if !ok {
+		t.Fatalf("expected Histogram[float64], got %T", latencyMetric.Data)
+	}
+	totalCount := uint64(0)
+	totalSum := 0.0
+	for _, dp := range latHist.DataPoints {
+		totalCount += dp.Count
+		totalSum += dp.Sum
+	}
+	if totalCount != 3 {
+		t.Errorf("latency count = %d, want 3", totalCount)
+	}
+	if totalSum != 8.0 {
+		t.Errorf("latency sum = %f, want 8.0", totalSum)
+	}
+}
+
+// Metric collection helpers for gateway tests.
+
+func findMetric(rm metricdata.ResourceMetrics, name string) *metricdata.Metrics {
+	for _, sm := range rm.ScopeMetrics {
+		for i := range sm.Metrics {
+			if sm.Metrics[i].Name == name {
+				return &sm.Metrics[i]
+			}
+		}
+	}
+	return nil
+}
+
+func counterByAttr(sum metricdata.Sum[int64], key, val string) int64 {
+	for _, dp := range sum.DataPoints {
+		v, ok := dp.Attributes.Value(attribute.Key(key))
+		if ok && v.AsString() == val {
+			return dp.Value
+		}
+	}
+	return 0
 }

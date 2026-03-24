@@ -8,6 +8,10 @@ import (
 	"testing"
 	"time"
 
+	"go.opentelemetry.io/otel/attribute"
+	sdkmetric "go.opentelemetry.io/otel/sdk/metric"
+	"go.opentelemetry.io/otel/sdk/metric/metricdata"
+
 	"github.com/defenseclaw/defenseclaw/internal/config"
 	"github.com/defenseclaw/defenseclaw/internal/scanner"
 )
@@ -492,4 +496,169 @@ func TestBuildResource(t *testing.T) {
 	if res == nil {
 		t.Fatal("resource should not be nil")
 	}
+}
+
+// ---------------------------------------------------------------------------
+// OTel metric verification tests — ensure guardrail metrics are actually
+// recorded with the correct instruments and attribute values.
+// ---------------------------------------------------------------------------
+
+func TestRecordGuardrailEvaluation_EmitsMetric(t *testing.T) {
+	reader := sdkmetric.NewManualReader()
+	p, err := NewProviderForTest(reader)
+	if err != nil {
+		t.Fatalf("NewProviderForTest: %v", err)
+	}
+	defer p.Shutdown(context.Background())
+
+	ctx := context.Background()
+	p.RecordGuardrailEvaluation(ctx, "litellm-guardrail", "block")
+	p.RecordGuardrailEvaluation(ctx, "litellm-guardrail", "allow")
+	p.RecordGuardrailEvaluation(ctx, "litellm-guardrail", "block")
+
+	var rm metricdata.ResourceMetrics
+	if err := reader.Collect(ctx, &rm); err != nil {
+		t.Fatalf("Collect: %v", err)
+	}
+
+	found := findCounter(rm, "defenseclaw.guardrail.evaluations")
+	if found == nil {
+		t.Fatal("metric defenseclaw.guardrail.evaluations not found")
+	}
+
+	sum, ok := found.Data.(metricdata.Sum[int64])
+	if !ok {
+		t.Fatalf("expected Sum[int64], got %T", found.Data)
+	}
+
+	blockCount := counterValueByAttr(sum, "guardrail.action_taken", "block")
+	allowCount := counterValueByAttr(sum, "guardrail.action_taken", "allow")
+
+	if blockCount != 2 {
+		t.Errorf("block count = %d, want 2", blockCount)
+	}
+	if allowCount != 1 {
+		t.Errorf("allow count = %d, want 1", allowCount)
+	}
+}
+
+func TestRecordGuardrailLatency_EmitsMetric(t *testing.T) {
+	reader := sdkmetric.NewManualReader()
+	p, err := NewProviderForTest(reader)
+	if err != nil {
+		t.Fatalf("NewProviderForTest: %v", err)
+	}
+	defer p.Shutdown(context.Background())
+
+	ctx := context.Background()
+	p.RecordGuardrailLatency(ctx, "litellm-guardrail", 15.5)
+	p.RecordGuardrailLatency(ctx, "litellm-guardrail", 22.0)
+
+	var rm metricdata.ResourceMetrics
+	if err := reader.Collect(ctx, &rm); err != nil {
+		t.Fatalf("Collect: %v", err)
+	}
+
+	found := findHistogram(rm, "defenseclaw.guardrail.latency")
+	if found == nil {
+		t.Fatal("metric defenseclaw.guardrail.latency not found")
+	}
+
+	hist, ok := found.Data.(metricdata.Histogram[float64])
+	if !ok {
+		t.Fatalf("expected Histogram[float64], got %T", found.Data)
+	}
+
+	if len(hist.DataPoints) == 0 {
+		t.Fatal("expected at least one histogram data point")
+	}
+
+	dp := hist.DataPoints[0]
+	if dp.Count != 2 {
+		t.Errorf("histogram count = %d, want 2", dp.Count)
+	}
+	if dp.Sum != 37.5 {
+		t.Errorf("histogram sum = %f, want 37.5", dp.Sum)
+	}
+
+	hasScanner := hasAttribute(dp.Attributes, "guardrail.scanner", "litellm-guardrail")
+	if !hasScanner {
+		t.Error("histogram missing attribute guardrail.scanner=litellm-guardrail")
+	}
+}
+
+func TestRecordLLMTokens_EmitsMetric(t *testing.T) {
+	reader := sdkmetric.NewManualReader()
+	p, err := NewProviderForTest(reader)
+	if err != nil {
+		t.Fatalf("NewProviderForTest: %v", err)
+	}
+	defer p.Shutdown(context.Background())
+
+	ctx := context.Background()
+	p.RecordLLMTokens(ctx, "litellm", 150, 75)
+	p.RecordLLMTokens(ctx, "litellm", 200, 0) // no completion tokens
+
+	var rm metricdata.ResourceMetrics
+	if err := reader.Collect(ctx, &rm); err != nil {
+		t.Fatalf("Collect: %v", err)
+	}
+
+	found := findCounter(rm, "defenseclaw.llm.tokens")
+	if found == nil {
+		t.Fatal("metric defenseclaw.llm.tokens not found")
+	}
+
+	sum, ok := found.Data.(metricdata.Sum[int64])
+	if !ok {
+		t.Fatalf("expected Sum[int64], got %T", found.Data)
+	}
+
+	promptTokens := counterValueByAttr(sum, "token.type", "prompt")
+	completionTokens := counterValueByAttr(sum, "token.type", "completion")
+
+	if promptTokens != 350 {
+		t.Errorf("prompt tokens = %d, want 350", promptTokens)
+	}
+	if completionTokens != 75 {
+		t.Errorf("completion tokens = %d, want 75", completionTokens)
+	}
+}
+
+func TestRecordGuardrailEvaluation_DisabledProvider_NoOp(t *testing.T) {
+	p, _ := NewProvider(context.Background(), disabledCfg(), "test")
+	p.RecordGuardrailEvaluation(context.Background(), "test", "block")
+}
+
+// ---------------------------------------------------------------------------
+// Metric collection helpers
+// ---------------------------------------------------------------------------
+
+func findCounter(rm metricdata.ResourceMetrics, name string) *metricdata.Metrics {
+	for _, sm := range rm.ScopeMetrics {
+		for i := range sm.Metrics {
+			if sm.Metrics[i].Name == name {
+				return &sm.Metrics[i]
+			}
+		}
+	}
+	return nil
+}
+
+func findHistogram(rm metricdata.ResourceMetrics, name string) *metricdata.Metrics {
+	return findCounter(rm, name) // same lookup, different data type
+}
+
+func counterValueByAttr(sum metricdata.Sum[int64], key, val string) int64 {
+	for _, dp := range sum.DataPoints {
+		if hasAttribute(dp.Attributes, key, val) {
+			return dp.Value
+		}
+	}
+	return 0
+}
+
+func hasAttribute(attrs attribute.Set, key, val string) bool {
+	v, ok := attrs.Value(attribute.Key(key))
+	return ok && v.AsString() == val
 }

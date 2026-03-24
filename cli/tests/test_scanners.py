@@ -205,10 +205,18 @@ class TestSkillScannerWrapper(unittest.TestCase):
     def test_scan_raises_system_exit_on_import_error(self):
         from defenseclaw.config import SkillScannerConfig
         from defenseclaw.scanner.skill import SkillScannerWrapper
+        import builtins
 
         s = SkillScannerWrapper(SkillScannerConfig())
-        with self.assertRaises(SystemExit):
-            s.scan("/tmp/nonexistent")
+        real_import = builtins.__import__
+        def fake_import(name, *args, **kwargs):
+            if name == "skill_scanner" or name.startswith("skill_scanner."):
+                raise ImportError(f"mocked: no module named {name}")
+            return real_import(name, *args, **kwargs)
+
+        with patch.object(builtins, "__import__", side_effect=fake_import):
+            with self.assertRaises(SystemExit):
+                s.scan("/tmp/nonexistent")
 
     @patch("defenseclaw.scanner.skill.SkillScannerWrapper._convert")
     def test_scan_with_mocked_sdk(self, mock_convert):

@@ -72,10 +72,10 @@ def init_cmd(app: AppContext, skip_install: bool) -> None:
     _install_scanners(cfg, logger, skip_install)
 
     click.echo()
-    _install_guardrail(defaults, logger, skip_install)
+    _install_guardrail(cfg, logger, skip_install)
 
     click.echo()
-    if shutil.which(defaults.openshell.binary):
+    if shutil.which(cfg.openshell.binary):
         click.echo("  OpenShell: found")
     elif env == "macos":
         click.echo("  OpenShell: not available on macOS (sandbox enforcement will be skipped)")
