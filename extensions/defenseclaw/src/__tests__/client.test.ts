@@ -113,7 +113,7 @@ function createRequestImpl(
     };
 
     return req;
-  }) as typeof import("node:http").request;
+  }) as unknown as typeof import("node:http").request;
 }
 
 function makeClient(
