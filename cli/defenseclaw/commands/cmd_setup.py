@@ -420,6 +420,10 @@ def setup_gateway(
             else:
                 click.echo("error: failed to fetch token from SSM", err=True)
                 raise SystemExit(1)
+        elif not gw.token:
+            detected = _detect_openclaw_gateway_token(app.cfg.claw.config_file)
+            if detected:
+                gw.token = detected
     elif remote:
         _interactive_gateway_remote(gw)
     else:
@@ -482,6 +486,21 @@ def _interactive_gateway_remote(gw) -> None:
 
     if not gw.token:
         click.echo("  warning: no token set — sidecar will fail to connect to a remote gateway", err=True)
+
+
+def _detect_openclaw_gateway_token(openclaw_config_file: str) -> str:
+    """Read the gateway auth token from openclaw.json (gateway.auth.token)."""
+    from pathlib import Path
+
+    path = openclaw_config_file
+    if path.startswith("~/"):
+        path = str(Path.home() / path[2:])
+    try:
+        with open(path) as f:
+            cfg = _json.load(f)
+        return cfg.get("gateway", {}).get("auth", {}).get("token", "")
+    except (OSError, ValueError, KeyError):
+        return ""
 
 
 def _fetch_ssm_token(param: str, region: str, profile: str | None) -> str | None:

@@ -241,6 +241,8 @@ func TestActionMapping(t *testing.T) {
 		{"enable", "enable", "user"},
 		{"api-skill-disable", "disable", "user"},
 		{"api-skill-enable", "enable", "user"},
+		{"watch-start", "watch-start", "watcher"},
+		{"watch-stop", "watch-stop", "watcher"},
 	}
 
 	for _, tt := range tests {
@@ -263,7 +265,7 @@ func TestNonLifecycleActionsExcluded(t *testing.T) {
 	nonLifecycle := []string{
 		"sidecar-start", "sidecar-stop", "sidecar-connected",
 		"gateway-tool-call", "gateway-tool-result",
-		"gateway-approval-requested", "watch-start", "watch-stop",
+		"gateway-approval-requested",
 		"api-config-patch",
 	}
 	for _, action := range nonLifecycle {
