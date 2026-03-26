@@ -57,6 +57,18 @@ func TestDefaultConfig(t *testing.T) {
 	if cfg.Gateway.Port != 18789 {
 		t.Errorf("expected gateway port 18789, got %d", cfg.Gateway.Port)
 	}
+	if cfg.Gateway.APIPort != 18970 {
+		t.Errorf("expected gateway api_port 18970, got %d", cfg.Gateway.APIPort)
+	}
+	if !cfg.Gateway.Watcher.Enabled {
+		t.Error("expected gateway watcher enabled by default")
+	}
+	if !cfg.Gateway.Watcher.Skill.Enabled {
+		t.Error("expected gateway watcher skill enabled by default")
+	}
+	if cfg.Gateway.Watcher.Skill.TakeAction {
+		t.Error("expected gateway watcher skill take_action=false by default")
+	}
 	if cfg.Watch.DebounceMs != 500 {
 		t.Errorf("expected debounce 500ms, got %d", cfg.Watch.DebounceMs)
 	}
@@ -94,8 +106,8 @@ func TestDefaultSkillActions(t *testing.T) {
 		runtime  RuntimeAction
 		install  InstallAction
 	}{
-		{"CRITICAL", FileActionQuarantine, RuntimeDisable, InstallBlock},
-		{"HIGH", FileActionQuarantine, RuntimeDisable, InstallBlock},
+		{"CRITICAL", FileActionNone, RuntimeEnable, InstallNone},
+		{"HIGH", FileActionNone, RuntimeEnable, InstallNone},
 		{"MEDIUM", FileActionNone, RuntimeEnable, InstallNone},
 		{"LOW", FileActionNone, RuntimeEnable, InstallNone},
 		{"INFO", FileActionNone, RuntimeEnable, InstallNone},
@@ -120,8 +132,8 @@ func TestDefaultSkillActions(t *testing.T) {
 func TestForSeverity_CaseInsensitive(t *testing.T) {
 	sa := DefaultSkillActions()
 	got := sa.ForSeverity("critical")
-	if got.Install != InstallBlock {
-		t.Errorf("expected block for lowercase critical, got %q", got.Install)
+	if got.Install != InstallNone {
+		t.Errorf("expected none for lowercase critical, got %q", got.Install)
 	}
 }
 
@@ -135,8 +147,8 @@ func TestForSeverity_Unknown(t *testing.T) {
 
 func TestShouldDisable(t *testing.T) {
 	sa := DefaultSkillActions()
-	if !sa.ShouldDisable("CRITICAL") {
-		t.Error("expected ShouldDisable(CRITICAL)=true")
+	if sa.ShouldDisable("CRITICAL") {
+		t.Error("expected ShouldDisable(CRITICAL)=false with permissive defaults")
 	}
 	if sa.ShouldDisable("LOW") {
 		t.Error("expected ShouldDisable(LOW)=false")
@@ -145,8 +157,8 @@ func TestShouldDisable(t *testing.T) {
 
 func TestShouldQuarantine(t *testing.T) {
 	sa := DefaultSkillActions()
-	if !sa.ShouldQuarantine("HIGH") {
-		t.Error("expected ShouldQuarantine(HIGH)=true")
+	if sa.ShouldQuarantine("HIGH") {
+		t.Error("expected ShouldQuarantine(HIGH)=false with permissive defaults")
 	}
 	if sa.ShouldQuarantine("MEDIUM") {
 		t.Error("expected ShouldQuarantine(MEDIUM)=false")
@@ -155,8 +167,8 @@ func TestShouldQuarantine(t *testing.T) {
 
 func TestShouldInstallBlock(t *testing.T) {
 	sa := DefaultSkillActions()
-	if !sa.ShouldInstallBlock("CRITICAL") {
-		t.Error("expected ShouldInstallBlock(CRITICAL)=true")
+	if sa.ShouldInstallBlock("CRITICAL") {
+		t.Error("expected ShouldInstallBlock(CRITICAL)=false with permissive defaults")
 	}
 	if sa.ShouldInstallBlock("INFO") {
 		t.Error("expected ShouldInstallBlock(INFO)=false")
@@ -452,6 +464,122 @@ func TestConfig_ClawHomeDir(t *testing.T) {
 	}
 	if cfg.ClawHomeDir() != "/tmp/my-claw" {
 		t.Errorf("ClawHomeDir() = %q, want /tmp/my-claw", cfg.ClawHomeDir())
+	}
+}
+
+func TestDefaultConfigInspectLLM(t *testing.T) {
+	cfg := DefaultConfig()
+
+	if cfg.InspectLLM.Timeout != 30 {
+		t.Errorf("expected InspectLLM.Timeout=30, got %d", cfg.InspectLLM.Timeout)
+	}
+	if cfg.InspectLLM.MaxRetries != 3 {
+		t.Errorf("expected InspectLLM.MaxRetries=3, got %d", cfg.InspectLLM.MaxRetries)
+	}
+	if cfg.InspectLLM.Provider != "" {
+		t.Errorf("expected empty InspectLLM.Provider, got %q", cfg.InspectLLM.Provider)
+	}
+}
+
+func TestDefaultConfigCiscoAIDefense(t *testing.T) {
+	cfg := DefaultConfig()
+
+	if cfg.CiscoAIDefense.Endpoint != "https://us.api.inspect.aidefense.security.cisco.com" {
+		t.Errorf("unexpected CiscoAIDefense.Endpoint: %q", cfg.CiscoAIDefense.Endpoint)
+	}
+	if cfg.CiscoAIDefense.APIKeyEnv != "CISCO_AI_DEFENSE_API_KEY" {
+		t.Errorf("expected APIKeyEnv %q, got %q", "CISCO_AI_DEFENSE_API_KEY", cfg.CiscoAIDefense.APIKeyEnv)
+	}
+	if cfg.CiscoAIDefense.TimeoutMs != 3000 {
+		t.Errorf("expected TimeoutMs=3000, got %d", cfg.CiscoAIDefense.TimeoutMs)
+	}
+}
+
+func TestInspectLLMResolvedAPIKey_Direct(t *testing.T) {
+	llm := &InspectLLMConfig{APIKey: "direct-key"}
+	if got := llm.ResolvedAPIKey(); got != "direct-key" {
+		t.Errorf("expected 'direct-key', got %q", got)
+	}
+}
+
+func TestInspectLLMResolvedAPIKey_Env(t *testing.T) {
+	t.Setenv("TEST_GO_LLM_KEY_XYZ", "env-key")
+	llm := &InspectLLMConfig{APIKey: "fallback", APIKeyEnv: "TEST_GO_LLM_KEY_XYZ"}
+	if got := llm.ResolvedAPIKey(); got != "env-key" {
+		t.Errorf("expected env-key, got %q", got)
+	}
+}
+
+func TestInspectLLMResolvedAPIKey_EnvUnset(t *testing.T) {
+	os.Unsetenv("TEST_GO_LLM_NONEXIST_XYZ")
+	llm := &InspectLLMConfig{APIKey: "fallback", APIKeyEnv: "TEST_GO_LLM_NONEXIST_XYZ"}
+	if got := llm.ResolvedAPIKey(); got != "fallback" {
+		t.Errorf("expected 'fallback', got %q", got)
+	}
+}
+
+func TestInspectLLMResolvedAPIKey_Empty(t *testing.T) {
+	llm := &InspectLLMConfig{}
+	if got := llm.ResolvedAPIKey(); got != "" {
+		t.Errorf("expected empty, got %q", got)
+	}
+}
+
+func TestCiscoAIDefenseResolvedAPIKey_Direct(t *testing.T) {
+	aid := &CiscoAIDefenseConfig{APIKey: "cisco-direct", APIKeyEnv: ""}
+	if got := aid.ResolvedAPIKey(); got != "cisco-direct" {
+		t.Errorf("expected 'cisco-direct', got %q", got)
+	}
+}
+
+func TestCiscoAIDefenseResolvedAPIKey_Env(t *testing.T) {
+	t.Setenv("TEST_GO_CISCO_KEY_XYZ", "cisco-env")
+	aid := &CiscoAIDefenseConfig{APIKey: "fallback", APIKeyEnv: "TEST_GO_CISCO_KEY_XYZ"}
+	if got := aid.ResolvedAPIKey(); got != "cisco-env" {
+		t.Errorf("expected 'cisco-env', got %q", got)
+	}
+}
+
+func TestGuardrailConfigNoCiscoField(t *testing.T) {
+	cfg := DefaultConfig()
+	_ = cfg.Guardrail.Mode
+	_ = cfg.Guardrail.Port
+	_ = cfg.CiscoAIDefense.Endpoint
+}
+
+func TestSkillScannerConfigNoLLMFields(t *testing.T) {
+	cfg := DefaultConfig()
+	sc := cfg.Scanners.SkillScanner
+	if sc.Binary != "skill-scanner" {
+		t.Errorf("expected 'skill-scanner', got %q", sc.Binary)
+	}
+	if sc.Policy != "permissive" {
+		t.Errorf("expected default policy 'permissive', got %q", sc.Policy)
+	}
+	if !sc.Lenient {
+		t.Error("expected default lenient=true")
+	}
+	_ = sc.UseLLM
+	_ = sc.VirusTotalKey
+}
+
+func TestMCPScannerConfigNoLLMFields(t *testing.T) {
+	cfg := DefaultConfig()
+	mc := cfg.Scanners.MCPScanner
+	if mc.Binary != "mcp-scanner" {
+		t.Errorf("expected 'mcp-scanner', got %q", mc.Binary)
+	}
+	if mc.Analyzers != "yara" {
+		t.Errorf("expected default analyzers 'yara', got %q", mc.Analyzers)
+	}
+	if mc.ScanPrompts {
+		t.Error("expected default scan_prompts=false")
+	}
+	if mc.ScanResources {
+		t.Error("expected default scan_resources=false")
+	}
+	if mc.ScanInstructions {
+		t.Error("expected default scan_instructions=false")
 	}
 }
 

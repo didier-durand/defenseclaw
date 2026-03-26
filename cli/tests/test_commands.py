@@ -1,10 +1,9 @@
-"""Tests for CLI commands — status, alerts, aibom, sidecar, plugin, mcp, deploy, init."""
+"""Tests for CLI commands — status, alerts, aibom, plugin, mcp, init."""
 
-import json
 import os
 import tempfile
 import unittest
-from datetime import datetime, timedelta, timezone
+from datetime import datetime, timezone
 from unittest.mock import MagicMock, patch
 
 import sys
@@ -90,59 +89,6 @@ class TestAlertsCommand(unittest.TestCase):
         result = _invoke(alerts, app=_make_app(store=store))
         self.assertEqual(result.exit_code, 0)
         self.assertIn("Security Alerts", result.output)
-
-
-# ── sidecar ───────────────────────────────────────────────────────────────
-
-class TestSidecarCommand(unittest.TestCase):
-    def test_sidecar_help(self):
-        from defenseclaw.commands.cmd_sidecar import sidecar
-        runner = CliRunner()
-        result = runner.invoke(sidecar, ["--help"])
-        self.assertEqual(result.exit_code, 0)
-        self.assertIn("sidecar", result.output)
-
-    @patch("defenseclaw.gateway.OrchestratorClient")
-    def test_sidecar_status_not_running(self, MockClient):
-        from defenseclaw.commands.cmd_sidecar import status
-
-        MockClient.return_value.is_running.return_value = False
-        result = _invoke(status, app=_make_app())
-        self.assertEqual(result.exit_code, 0)
-        self.assertIn("NOT RUNNING", result.output)
-
-    @patch("defenseclaw.gateway.OrchestratorClient")
-    def test_sidecar_status_running(self, MockClient):
-        from defenseclaw.commands.cmd_sidecar import status
-
-        inst = MockClient.return_value
-        inst.is_running.return_value = True
-        inst.health.return_value = {
-            "started_at": "2025-01-01T00:00:00Z",
-            "uptime_ms": 60000,
-            "gateway": {"state": "connected", "since": "2025-01-01T00:00:00Z"},
-            "watcher": {"state": "running", "since": "2025-01-01T00:00:00Z"},
-            "api": {"state": "listening", "since": "2025-01-01T00:00:00Z"},
-        }
-
-        result = _invoke(status, app=_make_app())
-        self.assertEqual(result.exit_code, 0)
-        self.assertIn("Sidecar Health", result.output)
-        self.assertIn("1m 0s", result.output)
-
-
-class TestFormatDuration(unittest.TestCase):
-    def test_seconds(self):
-        from defenseclaw.commands.cmd_sidecar import _format_duration
-        self.assertEqual(_format_duration(5000), "5s")
-
-    def test_minutes(self):
-        from defenseclaw.commands.cmd_sidecar import _format_duration
-        self.assertEqual(_format_duration(90000), "1m 30s")
-
-    def test_hours(self):
-        from defenseclaw.commands.cmd_sidecar import _format_duration
-        self.assertEqual(_format_duration(3661000), "1h 1m 1s")
 
 
 # ── plugin ────────────────────────────────────────────────────────────────
@@ -337,48 +283,9 @@ class TestInitCommand(unittest.TestCase):
 
                     result = _invoke(init_cmd, ["--skip-install"])
                     self.assertEqual(result.exit_code, 0)
-                    self.assertIn("Environment: macos", result.output)
-                    self.assertIn("Scanners: skipped", result.output)
+                    self.assertIn("Platform:", result.output)
+                    self.assertIn("skipped (--skip-install)", result.output)
                     self.assertIn("initialized", result.output)
-
-
-# ── deploy ────────────────────────────────────────────────────────────────
-
-class TestDeployCommand(unittest.TestCase):
-    @patch("defenseclaw.commands.cmd_deploy.shutil.which", return_value=None)
-    @patch("defenseclaw.commands.cmd_deploy._run_all_scanners")
-    @patch("defenseclaw.commands.cmd_deploy._ensure_init")
-    def test_deploy_skip_init(self, mock_init, mock_scanners, _which):
-        from defenseclaw.commands.cmd_deploy import deploy
-
-        mock_scanners.return_value = []
-        app = _make_app()
-        app.cfg.environment = "macos"
-
-        result = _invoke(deploy, [".", "--skip-init"], app=app)
-        self.assertEqual(result.exit_code, 0)
-        self.assertIn("Init skipped", result.output)
-        self.assertIn("Deploy Summary", result.output)
-        mock_init.assert_not_called()
-
-    @patch("defenseclaw.commands.cmd_deploy.shutil.which", return_value=None)
-    @patch("defenseclaw.commands.cmd_deploy._run_all_scanners")
-    @patch("defenseclaw.commands.cmd_deploy._ensure_init")
-    def test_deploy_with_clean_scanners(self, mock_init, mock_scanners, _which):
-        from defenseclaw.commands.cmd_deploy import deploy
-
-        mock_scanners.return_value = [
-            ("skill-scanner", ".", ScanResult(
-                scanner="skill-scanner", target=".",
-                timestamp=datetime.now(timezone.utc),
-            ), ""),
-        ]
-        app = _make_app()
-        app.cfg.environment = "macos"
-
-        result = _invoke(deploy, [".", "--skip-init"], app=app)
-        self.assertEqual(result.exit_code, 0)
-        self.assertIn("Total findings:   0", result.output)
 
 
 if __name__ == "__main__":

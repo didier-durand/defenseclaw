@@ -14,13 +14,11 @@ from defenseclaw import __version__
 from defenseclaw.commands.cmd_aibom import aibom
 from defenseclaw.commands.cmd_alerts import alerts
 from defenseclaw.commands.cmd_codeguard import codeguard
-from defenseclaw.commands.cmd_deploy import deploy
 from defenseclaw.commands.cmd_init import init_cmd
 from defenseclaw.commands.cmd_mcp import mcp
 from defenseclaw.commands.cmd_plugin import plugin
 from defenseclaw.commands.cmd_policy import policy
 from defenseclaw.commands.cmd_setup import setup
-from defenseclaw.commands.cmd_sidecar import sidecar
 from defenseclaw.commands.cmd_skill import skill
 from defenseclaw.commands.cmd_status import status
 from defenseclaw.context import AppContext
@@ -90,8 +88,6 @@ def cleanup(ctx: click.Context, *_args, **_kwargs) -> None:
 # Register all commands
 cli.add_command(init_cmd, "init")
 cli.add_command(setup)
-cli.add_command(deploy)
-cli.add_command(sidecar)
 cli.add_command(skill)
 cli.add_command(plugin)
 cli.add_command(policy)

@@ -13,7 +13,7 @@ from defenseclaw.gateway import OrchestratorClient
 class TestOrchestratorClientInit(unittest.TestCase):
     def test_defaults(self):
         client = OrchestratorClient()
-        self.assertEqual(client.base_url, "http://127.0.0.1:18790")
+        self.assertEqual(client.base_url, "http://127.0.0.1:18970")
         self.assertEqual(client.timeout, 5)
 
     def test_custom_params(self):
@@ -45,7 +45,7 @@ class TestOrchestratorClientHealth(unittest.TestCase):
 
         result = client.health()
 
-        session.get.assert_called_once_with("http://127.0.0.1:18790/health", timeout=5)
+        session.get.assert_called_once_with("http://127.0.0.1:18970/health", timeout=5)
         mock_resp.raise_for_status.assert_called_once()
         self.assertEqual(result, {"status": "ok"})
 
@@ -59,7 +59,7 @@ class TestOrchestratorClientStatus(unittest.TestCase):
 
         result = client.status()
 
-        session.get.assert_called_once_with("http://127.0.0.1:18790/status", timeout=5)
+        session.get.assert_called_once_with("http://127.0.0.1:18970/status", timeout=5)
         self.assertEqual(result["uptime_ms"], 5000)
 
 
@@ -73,7 +73,7 @@ class TestOrchestratorClientSkillOps(unittest.TestCase):
         result = client.disable_skill("bad-skill")
 
         session.post.assert_called_once_with(
-            "http://127.0.0.1:18790/skill/disable",
+            "http://127.0.0.1:18970/skill/disable",
             json={"skillKey": "bad-skill"},
             timeout=5,
         )
@@ -88,7 +88,7 @@ class TestOrchestratorClientSkillOps(unittest.TestCase):
         result = client.enable_skill("good-skill")
 
         session.post.assert_called_once_with(
-            "http://127.0.0.1:18790/skill/enable",
+            "http://127.0.0.1:18970/skill/enable",
             json={"skillKey": "good-skill"},
             timeout=5,
         )
@@ -105,7 +105,7 @@ class TestOrchestratorClientPatchConfig(unittest.TestCase):
         result = client.patch_config("watch.auto_block", True)
 
         session.post.assert_called_once_with(
-            "http://127.0.0.1:18790/config/patch",
+            "http://127.0.0.1:18970/config/patch",
             json={"path": "watch.auto_block", "value": True},
             timeout=5,
         )
@@ -122,7 +122,7 @@ class TestOrchestratorClientScanSkill(unittest.TestCase):
         result = client.scan_skill("/path/to/skill", name="my-skill")
 
         session.post.assert_called_once_with(
-            "http://127.0.0.1:18790/v1/skill/scan",
+            "http://127.0.0.1:18970/v1/skill/scan",
             json={"target": "/path/to/skill", "name": "my-skill"},
             timeout=120,
         )

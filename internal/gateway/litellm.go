@@ -21,15 +21,16 @@ import (
 // on crash. The guardrail Python module directory is added to PYTHONPATH so
 // LiteLLM can import it.
 type LiteLLMProcess struct {
-	cfg     *config.GuardrailConfig
-	logger  *audit.Logger
-	health  *SidecarHealth
-	apiPort int
-	dataDir string
+	cfg            *config.GuardrailConfig
+	ciscoAIDefense *config.CiscoAIDefenseConfig
+	logger         *audit.Logger
+	health         *SidecarHealth
+	apiPort        int
+	dataDir        string
 }
 
-func NewLiteLLMProcess(cfg *config.GuardrailConfig, logger *audit.Logger, health *SidecarHealth, apiPort int, dataDir ...string) *LiteLLMProcess {
-	p := &LiteLLMProcess{cfg: cfg, logger: logger, health: health, apiPort: apiPort}
+func NewLiteLLMProcess(cfg *config.GuardrailConfig, aid *config.CiscoAIDefenseConfig, logger *audit.Logger, health *SidecarHealth, apiPort int, dataDir ...string) *LiteLLMProcess {
+	p := &LiteLLMProcess{cfg: cfg, ciscoAIDefense: aid, logger: logger, health: health, apiPort: apiPort}
 	if len(dataDir) > 0 {
 		p.dataDir = dataDir[0]
 	}
@@ -203,17 +204,20 @@ func (l *LiteLLMProcess) buildEnv() []string {
 	}
 
 	if l.cfg.ScannerMode == "remote" || l.cfg.ScannerMode == "both" {
-		if l.cfg.CiscoAIDefense.Endpoint != "" {
-			filtered = append(filtered, "CISCO_AI_DEFENSE_ENDPOINT="+l.cfg.CiscoAIDefense.Endpoint)
-		}
-		if l.cfg.CiscoAIDefense.APIKeyEnv != "" {
-			filtered = append(filtered, "CISCO_AI_DEFENSE_API_KEY_ENV="+l.cfg.CiscoAIDefense.APIKeyEnv)
-		}
-		if l.cfg.CiscoAIDefense.TimeoutMs > 0 {
-			filtered = append(filtered, fmt.Sprintf("CISCO_AI_DEFENSE_TIMEOUT_MS=%d", l.cfg.CiscoAIDefense.TimeoutMs))
-		}
-		if len(l.cfg.CiscoAIDefense.EnabledRules) > 0 {
-			filtered = append(filtered, "CISCO_AI_DEFENSE_ENABLED_RULES="+strings.Join(l.cfg.CiscoAIDefense.EnabledRules, ","))
+		aid := l.ciscoAIDefense
+		if aid != nil {
+			if aid.Endpoint != "" {
+				filtered = append(filtered, "CISCO_AI_DEFENSE_ENDPOINT="+aid.Endpoint)
+			}
+			if aid.APIKeyEnv != "" {
+				filtered = append(filtered, "CISCO_AI_DEFENSE_API_KEY_ENV="+aid.APIKeyEnv)
+			}
+			if aid.TimeoutMs > 0 {
+				filtered = append(filtered, fmt.Sprintf("CISCO_AI_DEFENSE_TIMEOUT_MS=%d", aid.TimeoutMs))
+			}
+			if len(aid.EnabledRules) > 0 {
+				filtered = append(filtered, "CISCO_AI_DEFENSE_ENABLED_RULES="+strings.Join(aid.EnabledRules, ","))
+			}
 		}
 	}
 

@@ -15,8 +15,8 @@ func TestDefaultSkillActions(t *testing.T) {
 		wantFile    config.FileAction
 		wantInstall config.InstallAction
 	}{
-		{"CRITICAL", config.RuntimeDisable, config.FileActionQuarantine, config.InstallBlock},
-		{"HIGH", config.RuntimeDisable, config.FileActionQuarantine, config.InstallBlock},
+		{"CRITICAL", config.RuntimeEnable, config.FileActionNone, config.InstallNone},
+		{"HIGH", config.RuntimeEnable, config.FileActionNone, config.InstallNone},
 		{"MEDIUM", config.RuntimeEnable, config.FileActionNone, config.InstallNone},
 		{"LOW", config.RuntimeEnable, config.FileActionNone, config.InstallNone},
 		{"INFO", config.RuntimeEnable, config.FileActionNone, config.InstallNone},
@@ -45,8 +45,8 @@ func TestForSeverityCaseInsensitive(t *testing.T) {
 	for _, v := range variants {
 		t.Run(v, func(t *testing.T) {
 			action := actions.ForSeverity(v)
-			if action.Runtime != config.RuntimeDisable {
-				t.Errorf("ForSeverity(%q).Runtime = %q, want %q", v, action.Runtime, config.RuntimeDisable)
+			if action.Runtime != config.RuntimeEnable {
+				t.Errorf("ForSeverity(%q).Runtime = %q, want %q", v, action.Runtime, config.RuntimeEnable)
 			}
 		})
 	}
@@ -69,28 +69,28 @@ func TestForSeverityUnknownFallsBackToInfo(t *testing.T) {
 func TestShouldDisableAndQuarantine(t *testing.T) {
 	actions := config.DefaultSkillActions()
 
-	if !actions.ShouldDisable("CRITICAL") {
-		t.Error("expected CRITICAL to be disabled")
+	if actions.ShouldDisable("CRITICAL") {
+		t.Error("expected CRITICAL not to be disabled with permissive defaults")
 	}
-	if !actions.ShouldDisable("HIGH") {
-		t.Error("expected HIGH to be disabled")
+	if actions.ShouldDisable("HIGH") {
+		t.Error("expected HIGH not to be disabled with permissive defaults")
 	}
 	if actions.ShouldDisable("MEDIUM") {
-		t.Error("expected MEDIUM not to be disabled with default config")
+		t.Error("expected MEDIUM not to be disabled with permissive defaults")
 	}
 
-	if !actions.ShouldQuarantine("CRITICAL") {
-		t.Error("expected CRITICAL to be quarantined")
+	if actions.ShouldQuarantine("CRITICAL") {
+		t.Error("expected CRITICAL not to be quarantined with permissive defaults")
 	}
 	if actions.ShouldQuarantine("LOW") {
-		t.Error("expected LOW not to be quarantined with default config")
+		t.Error("expected LOW not to be quarantined with permissive defaults")
 	}
 
-	if !actions.ShouldInstallBlock("CRITICAL") {
-		t.Error("expected CRITICAL to be install-blocked")
+	if actions.ShouldInstallBlock("CRITICAL") {
+		t.Error("expected CRITICAL not to be install-blocked with permissive defaults")
 	}
 	if actions.ShouldInstallBlock("MEDIUM") {
-		t.Error("expected MEDIUM not to be install-blocked with default config")
+		t.Error("expected MEDIUM not to be install-blocked with permissive defaults")
 	}
 }
 

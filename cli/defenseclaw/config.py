@@ -81,6 +81,46 @@ class ClawConfig:
 
 
 @dataclass
+class InspectLLMConfig:
+    """Shared LLM configuration used by both skill-scanner and mcp-scanner."""
+    provider: str = ""
+    model: str = ""
+    api_key: str = ""
+    api_key_env: str = ""
+    base_url: str = ""
+    timeout: int = 30
+    max_retries: int = 3
+
+    def resolved_api_key(self) -> str:
+        """Return api_key from env var (if set) or direct value."""
+        if self.api_key_env:
+            import os
+            val = os.environ.get(self.api_key_env, "")
+            if val:
+                return val
+        return self.api_key
+
+
+@dataclass
+class CiscoAIDefenseConfig:
+    """Shared Cisco AI Defense configuration used by scanners and guardrail."""
+    endpoint: str = "https://us.api.inspect.aidefense.security.cisco.com"
+    api_key: str = ""
+    api_key_env: str = "CISCO_AI_DEFENSE_API_KEY"
+    timeout_ms: int = 3000
+    enabled_rules: list[str] = field(default_factory=list)
+
+    def resolved_api_key(self) -> str:
+        """Return api_key from env var (if set) or direct value."""
+        if self.api_key_env:
+            import os
+            val = os.environ.get(self.api_key_env, "")
+            if val:
+                return val
+        return self.api_key
+
+
+@dataclass
 class SkillScannerConfig:
     binary: str = "skill-scanner"
     use_llm: bool = False
@@ -89,28 +129,16 @@ class SkillScannerConfig:
     use_trigger: bool = False
     use_virustotal: bool = False
     use_aidefense: bool = False
-    llm_provider: str = ""
-    llm_model: str = ""
     llm_consensus_runs: int = 0
-    policy: str = ""
-    lenient: bool = False
-    llm_api_key: str = ""
+    policy: str = "permissive"
+    lenient: bool = True
     virustotal_api_key: str = ""
-    aidefense_api_key: str = ""
 
 
 @dataclass
 class MCPScannerConfig:
     binary: str = "mcp-scanner"
-    analyzers: str = ""
-    api_key: str = ""
-    endpoint_url: str = ""
-    llm_provider: str = ""
-    llm_api_key: str = ""
-    llm_model: str = ""
-    llm_base_url: str = ""
-    llm_timeout: int = 30
-    llm_max_retries: int = 3
+    analyzers: str = "yara"
     scan_prompts: bool = False
     scan_resources: bool = False
     scan_instructions: bool = False
@@ -151,13 +179,13 @@ class SplunkConfig:
 @dataclass
 class GatewayWatcherSkillConfig:
     enabled: bool = True
-    take_action: bool = True
+    take_action: bool = False
     dirs: list[str] = field(default_factory=list)
 
 
 @dataclass
 class GatewayWatcherConfig:
-    enabled: bool = False
+    enabled: bool = True
     skill: GatewayWatcherSkillConfig = field(default_factory=GatewayWatcherSkillConfig)
 
 
@@ -171,7 +199,7 @@ class GatewayConfig:
     reconnect_ms: int = 800
     max_reconnect_ms: int = 15000
     approval_timeout_s: int = 30
-    api_port: int = 18790
+    api_port: int = 18970
     watcher: GatewayWatcherConfig = field(default_factory=GatewayWatcherConfig)
 
 
@@ -184,12 +212,8 @@ class SeverityAction:
 
 @dataclass
 class SkillActionsConfig:
-    critical: SeverityAction = field(
-        default_factory=lambda: SeverityAction(file="quarantine", runtime="disable", install="block"),
-    )
-    high: SeverityAction = field(
-        default_factory=lambda: SeverityAction(file="quarantine", runtime="disable", install="block"),
-    )
+    critical: SeverityAction = field(default_factory=SeverityAction)
+    high: SeverityAction = field(default_factory=SeverityAction)
     medium: SeverityAction = field(default_factory=SeverityAction)
     low: SeverityAction = field(default_factory=SeverityAction)
     info: SeverityAction = field(default_factory=SeverityAction)
@@ -244,14 +268,6 @@ class FirewallConfig:
 
 
 @dataclass
-class CiscoAIDefenseConfig:
-    endpoint: str = "https://us.api.inspect.aidefense.security.cisco.com"
-    api_key_env: str = "CISCO_AI_DEFENSE_API_KEY"
-    timeout_ms: int = 3000
-    enabled_rules: list[str] = field(default_factory=list)
-
-
-@dataclass
 class GuardrailConfig:
     enabled: bool = False
     mode: str = "observe"           # observe | action
@@ -263,8 +279,7 @@ class GuardrailConfig:
     guardrail_dir: str = ""         # directory containing guardrail module (must match litellm_config dir)
     litellm_config: str = ""        # path to generated litellm_config.yaml
     original_model: str = ""        # original OpenClaw model (for revert)
-    block_message: str = ""          # custom message shown when a request is blocked (empty = default)
-    cisco_ai_defense: CiscoAIDefenseConfig = field(default_factory=CiscoAIDefenseConfig)
+    block_message: str = ""         # custom message shown when a request is blocked (empty = default)
 
 
 @dataclass
@@ -276,6 +291,8 @@ class Config:
     policy_dir: str = ""
     environment: str = ""
     claw: ClawConfig = field(default_factory=ClawConfig)
+    inspect_llm: InspectLLMConfig = field(default_factory=InspectLLMConfig)
+    cisco_ai_defense: CiscoAIDefenseConfig = field(default_factory=CiscoAIDefenseConfig)
     scanners: ScannersConfig = field(default_factory=ScannersConfig)
     openshell: OpenShellConfig = field(default_factory=OpenShellConfig)
     watch: WatchConfig = field(default_factory=WatchConfig)
@@ -468,11 +485,26 @@ def _merge_mcp_actions(raw: dict[str, Any] | None) -> MCPActionsConfig:
     )
 
 
+def _merge_inspect_llm(raw: dict[str, Any] | None) -> InspectLLMConfig:
+    if not raw:
+        return InspectLLMConfig()
+    return InspectLLMConfig(
+        provider=raw.get("provider", ""),
+        model=raw.get("model", ""),
+        api_key=raw.get("api_key", ""),
+        api_key_env=raw.get("api_key_env", ""),
+        base_url=raw.get("base_url", ""),
+        timeout=raw.get("timeout", 30),
+        max_retries=raw.get("max_retries", 3),
+    )
+
+
 def _merge_cisco_ai_defense(raw: dict[str, Any] | None) -> CiscoAIDefenseConfig:
     if not raw:
         return CiscoAIDefenseConfig()
     return CiscoAIDefenseConfig(
         endpoint=raw.get("endpoint", "https://us.api.inspect.aidefense.security.cisco.com"),
+        api_key=raw.get("api_key", ""),
         api_key_env=raw.get("api_key_env", "CISCO_AI_DEFENSE_API_KEY"),
         timeout_ms=raw.get("timeout_ms", 3000),
         enabled_rules=raw.get("enabled_rules", []),
@@ -497,7 +529,6 @@ def _merge_guardrail(raw: dict[str, Any] | None, data_dir: str) -> GuardrailConf
         litellm_config=raw.get("litellm_config", os.path.join(data_dir, "litellm_config.yaml")),
         original_model=raw.get("original_model", ""),
         block_message=raw.get("block_message", ""),
-        cisco_ai_defense=_merge_cisco_ai_defense(raw.get("cisco_ai_defense")),
     )
 
 
@@ -510,15 +541,7 @@ def _merge_mcp_scanner(raw: Any) -> MCPScannerConfig:
     if isinstance(raw, dict):
         return MCPScannerConfig(
             binary=raw.get("binary", "mcp-scanner"),
-            analyzers=raw.get("analyzers", ""),
-            api_key=raw.get("api_key", ""),
-            endpoint_url=raw.get("endpoint_url", ""),
-            llm_provider=raw.get("llm_provider", ""),
-            llm_api_key=raw.get("llm_api_key", ""),
-            llm_model=raw.get("llm_model", ""),
-            llm_base_url=raw.get("llm_base_url", ""),
-            llm_timeout=raw.get("llm_timeout", 30),
-            llm_max_retries=raw.get("llm_max_retries", 3),
+            analyzers=raw.get("analyzers", "yara"),
             scan_prompts=raw.get("scan_prompts", False),
             scan_resources=raw.get("scan_resources", False),
             scan_instructions=raw.get("scan_instructions", False),
@@ -531,10 +554,10 @@ def _merge_gateway_watcher(raw: dict[str, Any] | None) -> GatewayWatcherConfig:
         return GatewayWatcherConfig()
     skill_raw = raw.get("skill", {})
     return GatewayWatcherConfig(
-        enabled=raw.get("enabled", False),
+        enabled=raw.get("enabled", True),
         skill=GatewayWatcherSkillConfig(
             enabled=skill_raw.get("enabled", True),
-            take_action=skill_raw.get("take_action", True),
+            take_action=skill_raw.get("take_action", False),
             dirs=skill_raw.get("dirs", []),
         ),
     )
@@ -569,6 +592,8 @@ def load() -> Config:
             home_dir=raw.get("claw", {}).get("home_dir", "~/.openclaw"),
             config_file=raw.get("claw", {}).get("config_file", "~/.openclaw/openclaw.json"),
         ),
+        inspect_llm=_merge_inspect_llm(raw.get("inspect_llm")),
+        cisco_ai_defense=_merge_cisco_ai_defense(raw.get("cisco_ai_defense")),
         scanners=ScannersConfig(
             skill_scanner=SkillScannerConfig(
                 binary=ss_raw.get("binary", "skill-scanner"),
@@ -578,14 +603,10 @@ def load() -> Config:
                 use_trigger=ss_raw.get("use_trigger", False),
                 use_virustotal=ss_raw.get("use_virustotal", False),
                 use_aidefense=ss_raw.get("use_aidefense", False),
-                llm_provider=ss_raw.get("llm_provider", ""),
-                llm_model=ss_raw.get("llm_model", ""),
                 llm_consensus_runs=ss_raw.get("llm_consensus_runs", 0),
-                policy=ss_raw.get("policy", ""),
-                lenient=ss_raw.get("lenient", False),
-                llm_api_key=ss_raw.get("llm_api_key", ""),
+                policy=ss_raw.get("policy", "permissive"),
+                lenient=ss_raw.get("lenient", True),
                 virustotal_api_key=ss_raw.get("virustotal_api_key", ""),
-                aidefense_api_key=ss_raw.get("aidefense_api_key", ""),
             ),
             mcp_scanner=_merge_mcp_scanner(scanners_raw.get("mcp_scanner")),
             codeguard=scanners_raw.get("codeguard", os.path.join(data_dir, "codeguard-rules")),
@@ -624,7 +645,7 @@ def load() -> Config:
             reconnect_ms=gw_raw.get("reconnect_ms", 800),
             max_reconnect_ms=gw_raw.get("max_reconnect_ms", 15000),
             approval_timeout_s=gw_raw.get("approval_timeout_s", 30),
-            api_port=gw_raw.get("api_port", 18790),
+            api_port=gw_raw.get("api_port", 18970),
             watcher=_merge_gateway_watcher(gw_raw.get("watcher")),
         ),
         skill_actions=_merge_skill_actions(raw.get("skill_actions")),

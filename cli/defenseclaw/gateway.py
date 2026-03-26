@@ -12,7 +12,7 @@ import requests
 
 
 class OrchestratorClient:
-    def __init__(self, host: str = "127.0.0.1", port: int = 18790, timeout: int = 5) -> None:
+    def __init__(self, host: str = "127.0.0.1", port: int = 18970, timeout: int = 5) -> None:
         self.base_url = f"http://{host}:{port}"
         self.timeout = timeout
         self._session = requests.Session()

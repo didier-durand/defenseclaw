@@ -211,7 +211,7 @@ def _run_scan(app: AppContext, target: str, analyzers: str,
     if scan_instructions:
         scan_cfg = replace(scan_cfg, scan_instructions=True)
 
-    scanner = MCPScannerWrapper(scan_cfg)
+    scanner = MCPScannerWrapper(scan_cfg, app.cfg.inspect_llm, app.cfg.cisco_ai_defense)
     click.echo(f"Scanning MCP server: {target}")
 
     try:

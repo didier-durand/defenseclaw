@@ -11,16 +11,23 @@ import sys
 sys.path.insert(0, os.path.abspath(os.path.join(os.path.dirname(__file__), "..")))
 
 from defenseclaw.config import (
+    CiscoAIDefenseConfig,
     Config,
     ClawConfig,
     GatewayConfig,
     GatewayWatcherConfig,
     GatewayWatcherSkillConfig,
+    InspectLLMConfig,
+    MCPScannerConfig,
     SeverityAction,
     SkillActionsConfig,
+    SkillScannerConfig,
     _dedup,
     _expand,
+    _merge_cisco_ai_defense,
     _merge_gateway_watcher,
+    _merge_inspect_llm,
+    _merge_mcp_scanner,
     _merge_severity_action,
     _merge_skill_actions,
     default_config,
@@ -87,8 +94,8 @@ class TestSeverityAction(unittest.TestCase):
 class TestSkillActionsConfig(unittest.TestCase):
     def test_for_severity_known(self):
         cfg = SkillActionsConfig()
-        self.assertEqual(cfg.for_severity("CRITICAL").install, "block")
-        self.assertEqual(cfg.for_severity("HIGH").runtime, "disable")
+        self.assertEqual(cfg.for_severity("CRITICAL").install, "none")
+        self.assertEqual(cfg.for_severity("HIGH").runtime, "enable")
         self.assertEqual(cfg.for_severity("MEDIUM").runtime, "enable")
         self.assertEqual(cfg.for_severity("LOW").file, "none")
 
@@ -100,22 +107,22 @@ class TestSkillActionsConfig(unittest.TestCase):
 
     def test_for_severity_case_insensitive(self):
         cfg = SkillActionsConfig()
-        self.assertEqual(cfg.for_severity("critical").install, "block")
+        self.assertEqual(cfg.for_severity("critical").install, "none")
 
     def test_should_disable(self):
         cfg = SkillActionsConfig()
-        self.assertTrue(cfg.should_disable("CRITICAL"))
-        self.assertTrue(cfg.should_disable("HIGH"))
+        self.assertFalse(cfg.should_disable("CRITICAL"))
+        self.assertFalse(cfg.should_disable("HIGH"))
         self.assertFalse(cfg.should_disable("MEDIUM"))
 
     def test_should_quarantine(self):
         cfg = SkillActionsConfig()
-        self.assertTrue(cfg.should_quarantine("CRITICAL"))
+        self.assertFalse(cfg.should_quarantine("CRITICAL"))
         self.assertFalse(cfg.should_quarantine("LOW"))
 
     def test_should_install_block(self):
         cfg = SkillActionsConfig()
-        self.assertTrue(cfg.should_install_block("HIGH"))
+        self.assertFalse(cfg.should_install_block("HIGH"))
         self.assertFalse(cfg.should_install_block("INFO"))
 
 
@@ -131,17 +138,18 @@ class TestMergeFunctions(unittest.TestCase):
 
     def test_merge_skill_actions_none(self):
         sa = _merge_skill_actions(None)
-        self.assertEqual(sa.critical.install, "block")
+        self.assertEqual(sa.critical.install, "none")
 
     def test_merge_skill_actions_override(self):
-        sa = _merge_skill_actions({"critical": {"file": "none", "runtime": "enable", "install": "allow"}})
-        self.assertEqual(sa.critical.install, "allow")
-        self.assertEqual(sa.high.install, "block")
+        sa = _merge_skill_actions({"critical": {"file": "quarantine", "runtime": "disable", "install": "block"}})
+        self.assertEqual(sa.critical.install, "block")
+        self.assertEqual(sa.high.install, "none")
 
     def test_merge_gateway_watcher_none(self):
         gw = _merge_gateway_watcher(None)
-        self.assertFalse(gw.enabled)
+        self.assertTrue(gw.enabled)
         self.assertTrue(gw.skill.enabled)
+        self.assertFalse(gw.skill.take_action)
 
     def test_merge_gateway_watcher_with_data(self):
         gw = _merge_gateway_watcher({"enabled": True, "skill": {"enabled": False, "dirs": ["/tmp"]}})
@@ -160,6 +168,31 @@ class TestDefaultConfig(unittest.TestCase):
         self.assertEqual(cfg.scanners.skill_scanner.binary, "skill-scanner")
         self.assertEqual(cfg.scanners.mcp_scanner.binary, "mcp-scanner")
         self.assertEqual(cfg.gateway.port, 18789)
+        self.assertEqual(cfg.gateway.api_port, 18970)
+        self.assertTrue(cfg.gateway.watcher.enabled)
+        self.assertTrue(cfg.gateway.watcher.skill.enabled)
+        self.assertFalse(cfg.gateway.watcher.skill.take_action)
+
+    def test_default_skill_scanner_config(self):
+        cfg = default_config()
+        sc = cfg.scanners.skill_scanner
+        self.assertFalse(sc.use_llm)
+        self.assertFalse(sc.use_behavioral)
+        self.assertFalse(sc.enable_meta)
+        self.assertFalse(sc.use_trigger)
+        self.assertFalse(sc.use_virustotal)
+        self.assertFalse(sc.use_aidefense)
+        self.assertEqual(sc.llm_consensus_runs, 0)
+        self.assertEqual(sc.policy, "permissive")
+        self.assertTrue(sc.lenient)
+
+    def test_default_mcp_scanner_config(self):
+        cfg = default_config()
+        mc = cfg.scanners.mcp_scanner
+        self.assertEqual(mc.analyzers, "yara")
+        self.assertFalse(mc.scan_prompts)
+        self.assertFalse(mc.scan_resources)
+        self.assertFalse(mc.scan_instructions)
 
 
 class TestConfigLoadSave(unittest.TestCase):
@@ -289,6 +322,274 @@ class TestClawPaths(unittest.TestCase):
         ))
         candidates = cfg.installed_skill_candidates("@org/my-skill")
         self.assertTrue(all(c.endswith("my-skill") for c in candidates))
+
+
+class TestInspectLLMConfig(unittest.TestCase):
+    def test_defaults(self):
+        llm = InspectLLMConfig()
+        self.assertEqual(llm.provider, "")
+        self.assertEqual(llm.model, "")
+        self.assertEqual(llm.api_key, "")
+        self.assertEqual(llm.api_key_env, "")
+        self.assertEqual(llm.timeout, 30)
+        self.assertEqual(llm.max_retries, 3)
+
+    def test_resolved_api_key_direct(self):
+        llm = InspectLLMConfig(api_key="direct-key")
+        self.assertEqual(llm.resolved_api_key(), "direct-key")
+
+    def test_resolved_api_key_from_env(self):
+        llm = InspectLLMConfig(api_key="fallback", api_key_env="TEST_LLM_KEY_XYZ")
+        os.environ["TEST_LLM_KEY_XYZ"] = "env-key"
+        try:
+            self.assertEqual(llm.resolved_api_key(), "env-key")
+        finally:
+            del os.environ["TEST_LLM_KEY_XYZ"]
+
+    def test_resolved_api_key_env_takes_precedence(self):
+        """When both api_key and api_key_env are set and the env var exists, env wins."""
+        llm = InspectLLMConfig(api_key="direct", api_key_env="TEST_LLM_KEY_PREC")
+        os.environ["TEST_LLM_KEY_PREC"] = "from-env"
+        try:
+            self.assertEqual(llm.resolved_api_key(), "from-env")
+        finally:
+            del os.environ["TEST_LLM_KEY_PREC"]
+
+    def test_resolved_api_key_env_unset_falls_back(self):
+        """When api_key_env is set but the env var doesn't exist, fall back to api_key."""
+        llm = InspectLLMConfig(api_key="fallback", api_key_env="TEST_LLM_NONEXISTENT_XYZ")
+        os.environ.pop("TEST_LLM_NONEXISTENT_XYZ", None)
+        self.assertEqual(llm.resolved_api_key(), "fallback")
+
+    def test_resolved_api_key_empty(self):
+        llm = InspectLLMConfig()
+        self.assertEqual(llm.resolved_api_key(), "")
+
+
+class TestCiscoAIDefenseConfig(unittest.TestCase):
+    def test_defaults(self):
+        aid = CiscoAIDefenseConfig()
+        self.assertEqual(aid.endpoint, "https://us.api.inspect.aidefense.security.cisco.com")
+        self.assertEqual(aid.api_key, "")
+        self.assertEqual(aid.api_key_env, "CISCO_AI_DEFENSE_API_KEY")
+        self.assertEqual(aid.timeout_ms, 3000)
+        self.assertEqual(aid.enabled_rules, [])
+
+    def test_resolved_api_key_direct(self):
+        aid = CiscoAIDefenseConfig(api_key="cisco-key", api_key_env="")
+        self.assertEqual(aid.resolved_api_key(), "cisco-key")
+
+    def test_resolved_api_key_from_env(self):
+        aid = CiscoAIDefenseConfig(api_key="fallback", api_key_env="TEST_CISCO_KEY_XYZ")
+        os.environ["TEST_CISCO_KEY_XYZ"] = "env-cisco-key"
+        try:
+            self.assertEqual(aid.resolved_api_key(), "env-cisco-key")
+        finally:
+            del os.environ["TEST_CISCO_KEY_XYZ"]
+
+    def test_resolved_api_key_no_env_no_direct(self):
+        aid = CiscoAIDefenseConfig(api_key_env="")
+        self.assertEqual(aid.resolved_api_key(), "")
+
+
+class TestMergeInspectLLM(unittest.TestCase):
+    def test_none_returns_defaults(self):
+        llm = _merge_inspect_llm(None)
+        self.assertEqual(llm.provider, "")
+        self.assertEqual(llm.timeout, 30)
+
+    def test_partial_override(self):
+        llm = _merge_inspect_llm({"provider": "openai", "model": "gpt-4o"})
+        self.assertEqual(llm.provider, "openai")
+        self.assertEqual(llm.model, "gpt-4o")
+        self.assertEqual(llm.api_key, "")
+        self.assertEqual(llm.timeout, 30)
+
+    def test_full_override(self):
+        llm = _merge_inspect_llm({
+            "provider": "anthropic",
+            "model": "claude-sonnet-4-20250514",
+            "api_key": "sk-123",
+            "api_key_env": "MY_KEY",
+            "base_url": "https://custom.api",
+            "timeout": 60,
+            "max_retries": 5,
+        })
+        self.assertEqual(llm.provider, "anthropic")
+        self.assertEqual(llm.api_key, "sk-123")
+        self.assertEqual(llm.timeout, 60)
+        self.assertEqual(llm.max_retries, 5)
+
+
+class TestMergeCiscoAIDefense(unittest.TestCase):
+    def test_none_returns_defaults(self):
+        aid = _merge_cisco_ai_defense(None)
+        self.assertIn("aidefense.security.cisco.com", aid.endpoint)
+        self.assertEqual(aid.api_key_env, "CISCO_AI_DEFENSE_API_KEY")
+        self.assertEqual(aid.timeout_ms, 3000)
+
+    def test_override(self):
+        aid = _merge_cisco_ai_defense({
+            "endpoint": "https://eu.api.example.com",
+            "api_key": "aid-key-123",
+            "timeout_ms": 5000,
+            "enabled_rules": ["rule1", "rule2"],
+        })
+        self.assertEqual(aid.endpoint, "https://eu.api.example.com")
+        self.assertEqual(aid.api_key, "aid-key-123")
+        self.assertEqual(aid.timeout_ms, 5000)
+        self.assertEqual(aid.enabled_rules, ["rule1", "rule2"])
+
+
+class TestMergeMCPScannerClean(unittest.TestCase):
+    """Verify MCPScannerConfig no longer has LLM or AI Defense fields."""
+
+    def test_no_llm_fields(self):
+        cfg = MCPScannerConfig()
+        self.assertFalse(hasattr(cfg, "llm_provider"))
+        self.assertFalse(hasattr(cfg, "llm_api_key"))
+        self.assertFalse(hasattr(cfg, "llm_model"))
+        self.assertFalse(hasattr(cfg, "api_key"))
+        self.assertFalse(hasattr(cfg, "endpoint_url"))
+
+    def test_merge_mcp_scanner_ignores_old_fields(self):
+        cfg = _merge_mcp_scanner({
+            "binary": "mcp-scanner",
+            "analyzers": "yara",
+            "llm_provider": "openai",
+            "api_key": "stale-key",
+        })
+        self.assertEqual(cfg.binary, "mcp-scanner")
+        self.assertEqual(cfg.analyzers, "yara")
+        self.assertFalse(hasattr(cfg, "llm_provider"))
+        self.assertFalse(hasattr(cfg, "api_key"))
+
+
+class TestSkillScannerConfigClean(unittest.TestCase):
+    """Verify SkillScannerConfig no longer has LLM or AI Defense fields."""
+
+    def test_no_llm_fields(self):
+        cfg = SkillScannerConfig()
+        self.assertFalse(hasattr(cfg, "llm_provider"))
+        self.assertFalse(hasattr(cfg, "llm_model"))
+        self.assertFalse(hasattr(cfg, "llm_api_key"))
+        self.assertFalse(hasattr(cfg, "aidefense_api_key"))
+
+    def test_scanner_specific_fields_remain(self):
+        cfg = SkillScannerConfig(
+            use_llm=True, use_behavioral=True,
+            llm_consensus_runs=3, policy="strict",
+            virustotal_api_key="vt-key",
+        )
+        self.assertTrue(cfg.use_llm)
+        self.assertTrue(cfg.use_behavioral)
+        self.assertEqual(cfg.llm_consensus_runs, 3)
+        self.assertEqual(cfg.policy, "strict")
+        self.assertEqual(cfg.virustotal_api_key, "vt-key")
+
+
+class TestConfigTopLevelSections(unittest.TestCase):
+    def test_default_config_has_inspect_llm(self):
+        cfg = default_config()
+        self.assertIsInstance(cfg.inspect_llm, InspectLLMConfig)
+        self.assertEqual(cfg.inspect_llm.timeout, 30)
+
+    def test_default_config_has_cisco_ai_defense(self):
+        cfg = default_config()
+        self.assertIsInstance(cfg.cisco_ai_defense, CiscoAIDefenseConfig)
+        self.assertIn("aidefense.security.cisco.com", cfg.cisco_ai_defense.endpoint)
+
+    def test_save_and_reload_preserves_new_sections(self):
+        import yaml
+        with tempfile.TemporaryDirectory() as tmpdir:
+            cfg = Config(
+                data_dir=tmpdir,
+                audit_db=os.path.join(tmpdir, "audit.db"),
+                quarantine_dir=os.path.join(tmpdir, "quarantine"),
+                plugin_dir=os.path.join(tmpdir, "plugins"),
+                policy_dir=os.path.join(tmpdir, "policies"),
+                environment="macos",
+                inspect_llm=InspectLLMConfig(
+                    provider="anthropic",
+                    model="claude-sonnet-4-20250514",
+                    api_key="sk-test-123",
+                    timeout=45,
+                ),
+                cisco_ai_defense=CiscoAIDefenseConfig(
+                    endpoint="https://eu.api.example.com",
+                    api_key="aid-456",
+                    timeout_ms=5000,
+                ),
+            )
+            cfg.save()
+
+            with open(os.path.join(tmpdir, "config.yaml")) as f:
+                raw = yaml.safe_load(f)
+
+            self.assertEqual(raw["inspect_llm"]["provider"], "anthropic")
+            self.assertEqual(raw["inspect_llm"]["model"], "claude-sonnet-4-20250514")
+            self.assertEqual(raw["inspect_llm"]["api_key"], "sk-test-123")
+            self.assertEqual(raw["inspect_llm"]["timeout"], 45)
+
+            self.assertEqual(raw["cisco_ai_defense"]["endpoint"], "https://eu.api.example.com")
+            self.assertEqual(raw["cisco_ai_defense"]["api_key"], "aid-456")
+            self.assertEqual(raw["cisco_ai_defense"]["timeout_ms"], 5000)
+
+    def test_load_reads_new_sections(self):
+        import yaml
+        with tempfile.TemporaryDirectory() as tmpdir:
+            config_data = {
+                "data_dir": tmpdir,
+                "inspect_llm": {
+                    "provider": "openai",
+                    "model": "gpt-4o",
+                    "api_key": "sk-openai-key",
+                    "timeout": 60,
+                },
+                "cisco_ai_defense": {
+                    "endpoint": "https://custom.endpoint.com",
+                    "api_key": "custom-cisco-key",
+                    "timeout_ms": 10000,
+                    "enabled_rules": ["rule-a"],
+                },
+            }
+            with open(os.path.join(tmpdir, "config.yaml"), "w") as f:
+                yaml.dump(config_data, f)
+
+            with patch("defenseclaw.config.default_data_path") as mock_dp:
+                mock_dp.return_value = Path(tmpdir)
+                cfg = load()
+
+            self.assertEqual(cfg.inspect_llm.provider, "openai")
+            self.assertEqual(cfg.inspect_llm.model, "gpt-4o")
+            self.assertEqual(cfg.inspect_llm.api_key, "sk-openai-key")
+            self.assertEqual(cfg.inspect_llm.timeout, 60)
+
+            self.assertEqual(cfg.cisco_ai_defense.endpoint, "https://custom.endpoint.com")
+            self.assertEqual(cfg.cisco_ai_defense.api_key, "custom-cisco-key")
+            self.assertEqual(cfg.cisco_ai_defense.timeout_ms, 10000)
+            self.assertEqual(cfg.cisco_ai_defense.enabled_rules, ["rule-a"])
+
+    def test_load_without_new_sections_uses_defaults(self):
+        import yaml
+        with tempfile.TemporaryDirectory() as tmpdir:
+            config_data = {"data_dir": tmpdir, "environment": "linux"}
+            with open(os.path.join(tmpdir, "config.yaml"), "w") as f:
+                yaml.dump(config_data, f)
+
+            with patch("defenseclaw.config.default_data_path") as mock_dp:
+                mock_dp.return_value = Path(tmpdir)
+                cfg = load()
+
+            self.assertEqual(cfg.inspect_llm.provider, "")
+            self.assertEqual(cfg.inspect_llm.timeout, 30)
+            self.assertIn("aidefense.security.cisco.com", cfg.cisco_ai_defense.endpoint)
+
+    def test_guardrail_config_has_no_cisco_ai_defense(self):
+        """GuardrailConfig no longer nests CiscoAIDefenseConfig."""
+        from defenseclaw.config import GuardrailConfig
+        gc = GuardrailConfig()
+        self.assertFalse(hasattr(gc, "cisco_ai_defense"))
 
 
 if __name__ == "__main__":

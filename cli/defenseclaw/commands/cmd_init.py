@@ -17,31 +17,39 @@ from defenseclaw.context import AppContext, pass_ctx
 
 @click.command("init")
 @click.option("--skip-install", is_flag=True, help="Skip automatic scanner dependency installation")
+@click.option("--enable-guardrail", is_flag=True, help="Configure LLM guardrail during init")
 @pass_ctx
-def init_cmd(app: AppContext, skip_install: bool) -> None:
+def init_cmd(app: AppContext, skip_install: bool, enable_guardrail: bool) -> None:
     """Initialize DefenseClaw environment.
 
     Creates ~/.defenseclaw/, default config, SQLite database,
     and installs scanner dependencies.
+
+    Use --enable-guardrail to configure the LLM guardrail inline.
     """
     from defenseclaw.config import config_path, default_config, detect_environment, load
     from defenseclaw.db import Store
     from defenseclaw.logger import Logger
 
+    click.echo()
+    click.echo("  ── Environment ───────────────────────────────────────")
+    click.echo()
+
     env = detect_environment()
-    click.echo(f"  Environment: {env}")
+    click.echo(f"  Platform:      {env}")
 
     cfg_file = config_path()
-    if os.path.exists(cfg_file):
-        cfg = load()
-        click.echo("  Config: preserved existing")
-    else:
+    is_new_config = not os.path.exists(cfg_file)
+    if is_new_config:
         cfg = default_config()
-        click.echo("  Config: created new defaults")
+        click.echo("  Config:        created new defaults")
+    else:
+        cfg = load()
+        click.echo("  Config:        preserved existing")
 
     cfg.environment = env
-    click.echo(f"  Claw mode:   {cfg.claw.mode}")
-    click.echo(f"  Claw home:   {cfg.claw_home_dir()}")
+    click.echo(f"  Claw mode:     {cfg.claw.mode}")
+    click.echo(f"  Claw home:     {cfg.claw_home_dir()}")
 
     dirs = [
         cfg.data_dir, cfg.quarantine_dir,
@@ -57,38 +65,66 @@ def init_cmd(app: AppContext, skip_install: bool) -> None:
         d_real = os.path.realpath(d)
         if d_real.startswith(data_dir_real + os.sep):
             os.makedirs(d, exist_ok=True)
-    click.echo("  Directories: created")
+    click.echo("  Directories:   created")
 
     _seed_rego_policies(cfg.policy_dir)
-
-    cfg.save()
-    click.echo(f"  Config: {cfg_file}")
+    click.echo(f"  Config file:   {cfg_file}")
 
     store = Store(cfg.audit_db)
     store.init()
-    click.echo(f"  Audit DB: {cfg.audit_db}")
+    click.echo(f"  Audit DB:      {cfg.audit_db}")
 
     logger = Logger(store)
     logger.log_action("init", cfg.data_dir, f"environment={env}")
 
     click.echo()
+    click.echo("  ── Scanners ──────────────────────────────────────────")
+    click.echo()
     _install_scanners(cfg, logger, skip_install)
+    _show_scanner_defaults(cfg)
 
     click.echo()
-    _install_guardrail(cfg, logger, skip_install)
+    click.echo("  ── Gateway ───────────────────────────────────────────")
+    click.echo()
+    _setup_gateway_defaults(cfg, logger, is_new_config=is_new_config)
 
+    click.echo()
+    click.echo("  ── Guardrail ─────────────────────────────────────────")
+    click.echo()
+    guardrail_ok = False
+    if enable_guardrail:
+        guardrail_ok = _setup_guardrail_inline(app, cfg, logger)
+    else:
+        _install_guardrail(cfg, logger, skip_install)
+        click.echo()
+        click.echo("  Run 'defenseclaw init --enable-guardrail' or")
+        click.echo("  'defenseclaw setup guardrail' to enable LLM inspection.")
+
+    click.echo()
+    click.echo("  ── Skills ────────────────────────────────────────────")
     click.echo()
     _install_codeguard_skill(cfg, logger)
 
-    click.echo()
-    if shutil.which(cfg.openshell.binary):
-        click.echo("  OpenShell: found")
-    elif env == "macos":
-        click.echo("  OpenShell: not available on macOS (sandbox enforcement will be skipped)")
-    else:
-        click.echo("  OpenShell: not found (sandbox enforcement will not be active)")
+    cfg.save()
 
-    click.echo("\nDefenseClaw initialized. Run 'defenseclaw scan' to start scanning.")
+    click.echo()
+    click.echo("  ── Sidecar ───────────────────────────────────────────")
+    click.echo()
+    _start_gateway(cfg, logger)
+
+    click.echo()
+    click.echo("  ──────────────────────────────────────────────────────")
+    click.echo()
+    click.echo("  DefenseClaw initialized.")
+    click.echo()
+    click.echo("  Next steps:")
+    if guardrail_ok:
+        click.echo("    defenseclaw setup guardrail   Customize guardrail settings")
+    else:
+        click.echo("    defenseclaw setup guardrail   Enable LLM traffic inspection")
+    click.echo("    defenseclaw setup            Customize scanners and policies")
+    click.echo("    defenseclaw skill            Manage and scan OpenClaw skills")
+    click.echo("    defenseclaw mcp              Manage and scan MCP servers")
 
     store.close()
 
@@ -97,8 +133,10 @@ def _seed_rego_policies(policy_dir: str) -> None:
     """Copy bundled Rego policies into the user's policy_dir if not already present."""
     from pathlib import Path
 
-    here = Path(__file__).resolve()
-    bundled_rego = here.parent.parent.parent.parent / "policies" / "rego"
+    pkg_dir = Path(__file__).resolve().parent.parent
+    bundled_rego = pkg_dir / "_data" / "policies" / "rego"
+    if not bundled_rego.is_dir():
+        bundled_rego = pkg_dir.parent.parent / "policies" / "rego"
     if not bundled_rego.is_dir():
         return
 
@@ -111,12 +149,12 @@ def _seed_rego_policies(policy_dir: str) -> None:
             if not os.path.exists(dst):
                 shutil.copy2(str(src), dst)
 
-    click.echo(f"  Rego policies: seeded in {dest_rego}")
+    click.echo(f"  Rego policies: {dest_rego}")
 
 
 def _install_scanners(cfg, logger, skip: bool) -> None:
     if skip:
-        click.echo("  Scanners: skipped (--skip-install)")
+        click.echo("  Scanners:      skipped (--skip-install)")
         return
 
     _verify_scanner_sdk("skill-scanner", "skill_scanner")
@@ -128,43 +166,132 @@ def _verify_scanner_sdk(name: str, import_name: str, min_python: tuple[int, ...]
     import importlib
     import sys
 
+    pad = max(14 - len(name), 1)
+    label = name + ":" + " " * pad
+
     if min_python and sys.version_info < min_python:
         ver = ".".join(str(v) for v in min_python)
-        click.echo(f"  {name}: requires Python >={ver} (skipped)")
+        click.echo(f"  {label}requires Python >={ver} (skipped)")
         return
 
     try:
         importlib.import_module(import_name)
-        click.echo(f"  {name}: available")
+        click.echo(f"  {label}available")
     except ImportError:
-        click.echo(f"  {name}: not installed")
-        click.echo("    install with: pip install defenseclaw")
+        click.echo(f"  {label}not installed")
+        click.echo("                 install with: pip install defenseclaw")
+
+
+def _show_scanner_defaults(cfg) -> None:
+    """Display the default scanner configuration set during init."""
+    sc = cfg.scanners.skill_scanner
+    mc = cfg.scanners.mcp_scanner
+
+    click.echo()
+    click.echo(f"  skill-scanner: policy={sc.policy}, lenient={sc.lenient}")
+    click.echo(f"  mcp-scanner:   analyzers={mc.analyzers}")
+    click.echo()
+    click.echo("  Run 'defenseclaw setup' to customize scanner settings.")
+
+
+def _resolve_openclaw_gateway(claw_config_file: str) -> dict[str, str | int]:
+    """Read gateway host, port, and token from openclaw.json.
+
+    Looks for gateway.port and gateway.auth.token when gateway.model is 'local'.
+    Returns a dict with resolved values; missing keys use safe defaults.
+    """
+    from defenseclaw.config import _read_openclaw_config
+
+    result: dict[str, str | int] = {
+        "host": "127.0.0.1",
+        "port": 18789,
+        "token": "",
+    }
+
+    oc = _read_openclaw_config(claw_config_file)
+    if not oc:
+        return result
+
+    gw = oc.get("gateway", {})
+    if not isinstance(gw, dict):
+        return result
+
+    model = gw.get("model", "local")
+    if model == "local":
+        result["host"] = "127.0.0.1"
+    else:
+        result["host"] = gw.get("host", "127.0.0.1")
+
+    if "port" in gw:
+        try:
+            result["port"] = int(gw["port"])
+        except (ValueError, TypeError):
+            pass
+
+    auth = gw.get("auth", {})
+    if isinstance(auth, dict):
+        token = auth.get("token", "")
+        if token:
+            result["token"] = token
+
+    return result
+
+
+def _setup_gateway_defaults(cfg, logger, is_new_config: bool = True) -> None:
+    """Resolve gateway settings from OpenClaw and display them.
+
+    Only applies OpenClaw values (host/port/token) when creating a new config.
+    Existing configs preserve user-customized gateway settings.
+    """
+    if is_new_config:
+        oc_gw = _resolve_openclaw_gateway(cfg.claw.config_file)
+        cfg.gateway.host = oc_gw["host"]
+        cfg.gateway.port = oc_gw["port"]
+        if oc_gw["token"]:
+            cfg.gateway.token = oc_gw["token"]
+
+    if not cfg.gateway.device_key_file:
+        cfg.gateway.device_key_file = os.path.join(cfg.data_dir, "device.key")
+
+    click.echo(f"  OpenClaw:      {cfg.gateway.host}:{cfg.gateway.port}")
+    token_status = "configured" if cfg.gateway.token else "none (local)"
+    click.echo(f"  Token:         {token_status}")
+    click.echo(f"  API port:      {cfg.gateway.api_port}")
+    click.echo(f"  Watcher:       enabled={cfg.gateway.watcher.enabled}")
+    click.echo(f"  Skill watch:   enabled={cfg.gateway.watcher.skill.enabled}, "
+               f"take_action={cfg.gateway.watcher.skill.take_action}")
+    click.echo(f"  Device key:    {cfg.gateway.device_key_file}")
+    click.echo()
+    click.echo("  Run 'defenseclaw setup gateway' to customize.")
+
+    logger.log_action("init-gateway", "config",
+                       f"host={cfg.gateway.host} port={cfg.gateway.port}")
 
 
 def _install_guardrail(cfg, logger, skip: bool) -> None:
     """Install LiteLLM proxy and copy the guardrail module."""
     if skip:
-        click.echo("  LiteLLM: skipped (--skip-install)")
+        click.echo("  LiteLLM:       skipped (--skip-install)")
         return
 
     if _litellm_proxy_ready():
-        click.echo("  LiteLLM: proxy extras verified")
+        click.echo("  LiteLLM:       proxy extras verified")
     elif shutil.which("litellm"):
-        click.echo("  LiteLLM: binary found but proxy extras missing, installing...", nl=False)
+        click.echo("  LiteLLM:       installing proxy extras...", nl=False)
         if _install_litellm_proxy_extras():
             click.echo(" done")
             logger.log_action("install-dep", "litellm", "package=litellm[proxy]")
         else:
             click.echo(" failed")
-            click.echo("    install manually: pip install 'litellm[proxy]'")
+            click.echo("                 install manually: pip install 'litellm[proxy]'")
     else:
-        click.echo("  LiteLLM: installing...", nl=False)
+        click.echo("  LiteLLM:       installing...", nl=False)
         if _install_litellm():
             click.echo(" done")
             logger.log_action("install-dep", "litellm", "package=litellm[proxy]")
         else:
             click.echo(" failed")
-            click.echo("    install manually: uv tool install 'litellm[proxy]'")
+            click.echo("                 install manually: uv tool install 'litellm[proxy]'")
 
     guardrail_dir = cfg.guardrail.guardrail_dir
     os.makedirs(guardrail_dir, exist_ok=True)
@@ -174,18 +301,22 @@ def _install_guardrail(cfg, logger, skip: bool) -> None:
     repo_source = _find_guardrail_source()
     if repo_source:
         install_guardrail_module(repo_source, guardrail_dir)
-        click.echo(f"  Guardrail module: installed to {guardrail_dir}")
+        click.echo(f"  Module:        {guardrail_dir}")
         logger.log_action("install-dep", "guardrail", f"dir={guardrail_dir}")
     else:
-        click.echo("  Guardrail module: not found in package (run setup guardrail later)")
+        click.echo("  Module:        not found (run setup guardrail later)")
 
 
 def _find_guardrail_source() -> str | None:
+    pkg_dir = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+    bundled = os.path.join(pkg_dir, "_data", "guardrails", "defenseclaw_guardrail.py")
+    if os.path.isfile(bundled):
+        return bundled
+
     candidates = [
         os.path.join(os.path.dirname(__file__), "..", "..", "..", "guardrails", "defenseclaw_guardrail.py"),
     ]
     try:
-        pkg_dir = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
         repo_root = os.path.dirname(os.path.dirname(pkg_dir))
         candidates.append(os.path.join(repo_root, "guardrails", "defenseclaw_guardrail.py"))
     except Exception:
@@ -295,7 +426,144 @@ def _install_codeguard_skill(cfg, logger) -> None:
     """Install the CodeGuard proactive skill into the OpenClaw skills directory."""
     from defenseclaw.codeguard_skill import install_codeguard_skill
 
-    click.echo("  CodeGuard skill: installing...", nl=False)
+    click.echo("  CodeGuard:     installing...", nl=False)
     status = install_codeguard_skill(cfg)
     click.echo(f" {status}")
     logger.log_action("install-skill", "codeguard", f"status={status}")
+
+
+def _setup_guardrail_inline(app, cfg, logger) -> bool:
+    """Run the full interactive guardrail setup during init.
+
+    Returns True if guardrail was successfully configured.
+    """
+    from defenseclaw.commands.cmd_setup import (
+        _interactive_guardrail_setup,
+        execute_guardrail_setup,
+    )
+    from defenseclaw.context import AppContext
+
+    if not isinstance(app, AppContext):
+        app = AppContext()
+    app.cfg = cfg
+    app.logger = logger
+
+    gc = cfg.guardrail
+    _interactive_guardrail_setup(app, gc)
+
+    if not gc.enabled:
+        click.echo("  Guardrail not enabled.")
+        click.echo("  You can enable it later with 'defenseclaw setup guardrail'.")
+        return False
+
+    ok, warnings = execute_guardrail_setup(app, save_config=False)
+
+    if warnings:
+        click.echo()
+        click.echo("  ── Warnings ──────────────────────────────────────────")
+        for w in warnings:
+            click.echo(f"  ⚠ {w}")
+
+    if ok:
+        click.echo()
+        click.echo(f"  Guardrail:     mode={gc.mode}, model={gc.model_name}")
+        click.echo("  To disable:    defenseclaw setup guardrail --disable")
+        logger.log_action(
+            "init-guardrail", "config",
+            f"mode={gc.mode} scanner_mode={gc.scanner_mode} port={gc.port} model={gc.model}",
+        )
+
+    return ok
+
+
+def _start_gateway(cfg, logger) -> None:
+    """Start the defenseclaw-gateway sidecar and verify it is running."""
+    gw_bin = shutil.which("defenseclaw-gateway")
+    if not gw_bin:
+        click.echo("  Sidecar:       not found (binary not installed)")
+        click.echo("                 install with: make gateway-install")
+        return
+
+    pid_file = os.path.join(cfg.data_dir, "gateway.pid")
+    if _is_sidecar_running(pid_file):
+        pid = _read_pid(pid_file)
+        click.echo(f"  Sidecar:       already running (PID {pid})")
+        return
+
+    started = False
+    click.echo("  Sidecar:       starting...", nl=False)
+    try:
+        result = subprocess.run(
+            ["defenseclaw-gateway", "start"],
+            capture_output=True, text=True, timeout=30,
+        )
+        if result.returncode == 0:
+            click.echo(" ✓")
+            pid = _read_pid(pid_file)
+            if pid:
+                click.echo(f"  PID:           {pid}")
+            logger.log_action("init-sidecar", "start", f"pid={pid or 'unknown'}")
+            started = True
+        else:
+            click.echo(" ✗")
+            err = (result.stderr or result.stdout or "").strip()
+            if err:
+                for line in err.splitlines()[:3]:
+                    click.echo(f"                 {line}")
+            click.echo("                 check: defenseclaw-gateway status")
+    except FileNotFoundError:
+        click.echo(" ✗ (binary not found)")
+    except subprocess.TimeoutExpired:
+        click.echo(" ✗ (timed out)")
+        click.echo("                 check: defenseclaw-gateway status")
+
+    if started:
+        _check_sidecar_health(cfg.gateway.api_port)
+
+
+def _is_sidecar_running(pid_file: str) -> bool:
+    """Check if the gateway sidecar process is alive."""
+    pid = _read_pid(pid_file)
+    if pid is None:
+        return False
+    try:
+        os.kill(pid, 0)
+        return True
+    except (ProcessLookupError, PermissionError, OSError):
+        return False
+
+
+def _read_pid(pid_file: str) -> int | None:
+    """Read PID from the sidecar's PID file."""
+    try:
+        with open(pid_file) as f:
+            raw = f.read().strip()
+        try:
+            return int(raw)
+        except ValueError:
+            import json
+            return json.loads(raw)["pid"]
+    except (FileNotFoundError, ValueError, KeyError, OSError):
+        return None
+
+
+def _check_sidecar_health(api_port: int, retries: int = 3) -> None:
+    """Briefly poll the sidecar REST API to confirm it started."""
+    import time
+    import urllib.error
+    import urllib.request
+
+    url = f"http://127.0.0.1:{api_port}/health"
+    for i in range(retries):
+        time.sleep(1)
+        try:
+            req = urllib.request.Request(url, method="GET")
+            with urllib.request.urlopen(req, timeout=3) as resp:
+                if resp.status == 200:
+                    click.echo("  Health:        ok ✓")
+                    return
+        except (urllib.error.URLError, OSError, ValueError):
+            pass
+
+    click.echo("  Health:        not responding")
+    click.echo("                 check: defenseclaw-gateway status")

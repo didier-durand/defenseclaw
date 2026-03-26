@@ -14,14 +14,16 @@ import (
 )
 
 type MCPScanner struct {
-	Config config.MCPScannerConfig
+	Config         config.MCPScannerConfig
+	InspectLLM     config.InspectLLMConfig
+	CiscoAIDefense config.CiscoAIDefenseConfig
 }
 
-func NewMCPScanner(cfg config.MCPScannerConfig) *MCPScanner {
+func NewMCPScanner(cfg config.MCPScannerConfig, llm config.InspectLLMConfig, aid config.CiscoAIDefenseConfig) *MCPScanner {
 	if cfg.Binary == "" {
 		cfg.Binary = "mcp-scanner"
 	}
-	return &MCPScanner{Config: cfg}
+	return &MCPScanner{Config: cfg, InspectLLM: llm, CiscoAIDefense: aid}
 }
 
 func (s *MCPScanner) Name() string              { return "mcp-scanner" }
@@ -55,11 +57,11 @@ func (s *MCPScanner) scanEnv() []string {
 		envVar string
 		value  string
 	}{
-		{"MCP_SCANNER_API_KEY", s.Config.APIKey},
-		{"MCP_SCANNER_ENDPOINT", s.Config.EndpointURL},
-		{"MCP_SCANNER_LLM_API_KEY", s.Config.LLMAPIKey},
-		{"MCP_SCANNER_LLM_MODEL", s.Config.LLMModel},
-		{"MCP_SCANNER_LLM_BASE_URL", s.Config.LLMBaseURL},
+		{"MCP_SCANNER_API_KEY", s.CiscoAIDefense.ResolvedAPIKey()},
+		{"MCP_SCANNER_ENDPOINT", s.CiscoAIDefense.Endpoint},
+		{"MCP_SCANNER_LLM_API_KEY", s.InspectLLM.ResolvedAPIKey()},
+		{"MCP_SCANNER_LLM_MODEL", s.InspectLLM.Model},
+		{"MCP_SCANNER_LLM_BASE_URL", s.InspectLLM.BaseURL},
 	}
 
 	existing := make(map[string]bool)

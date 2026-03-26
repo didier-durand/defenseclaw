@@ -11,7 +11,7 @@ import sys
 from datetime import datetime, timedelta, timezone
 from typing import TYPE_CHECKING
 
-from defenseclaw.config import SkillScannerConfig
+from defenseclaw.config import CiscoAIDefenseConfig, InspectLLMConfig, SkillScannerConfig
 from defenseclaw.models import Finding, ScanResult
 
 if TYPE_CHECKING:
@@ -21,8 +21,15 @@ if TYPE_CHECKING:
 class SkillScannerWrapper:
     """Wraps the cisco-ai-skill-scanner SDK."""
 
-    def __init__(self, config: SkillScannerConfig) -> None:
+    def __init__(
+        self,
+        config: SkillScannerConfig,
+        inspect_llm: InspectLLMConfig | None = None,
+        cisco_ai_defense: CiscoAIDefenseConfig | None = None,
+    ) -> None:
         self.config = config
+        self.inspect_llm = inspect_llm or InspectLLMConfig()
+        self.cisco_ai_defense = cisco_ai_defense or CiscoAIDefenseConfig()
 
     def name(self) -> str:
         return "skill-scanner"
@@ -47,6 +54,7 @@ class SkillScannerWrapper:
             raise SystemExit(1)
 
         cfg = self.config
+        llm = self.inspect_llm
         self._inject_env()
 
         policy = ScanPolicy.default()
@@ -63,12 +71,13 @@ class SkillScannerWrapper:
             build_kwargs["use_behavioral"] = True
         if cfg.use_llm:
             build_kwargs["use_llm"] = True
-            if cfg.llm_model:
-                build_kwargs["llm_model"] = cfg.llm_model
-            if cfg.llm_provider:
-                build_kwargs["llm_provider"] = cfg.llm_provider
-            if cfg.llm_api_key:
-                build_kwargs["llm_api_key"] = cfg.llm_api_key
+            if llm.model:
+                build_kwargs["llm_model"] = llm.model
+            if llm.provider:
+                build_kwargs["llm_provider"] = llm.provider
+            api_key = llm.resolved_api_key()
+            if api_key:
+                build_kwargs["llm_api_key"] = api_key
             elif os.environ.get("SKILL_SCANNER_LLM_API_KEY"):
                 build_kwargs["llm_api_key"] = os.environ["SKILL_SCANNER_LLM_API_KEY"]
             if cfg.llm_consensus_runs > 0:
@@ -92,11 +101,13 @@ class SkillScannerWrapper:
     def _inject_env(self) -> None:
         """Inject API keys from config into env if not already set."""
         cfg = self.config
+        llm = self.inspect_llm
+        aid = self.cisco_ai_defense
         mappings = [
-            ("SKILL_SCANNER_LLM_API_KEY", cfg.llm_api_key),
-            ("SKILL_SCANNER_LLM_MODEL", cfg.llm_model),
+            ("SKILL_SCANNER_LLM_API_KEY", llm.resolved_api_key()),
+            ("SKILL_SCANNER_LLM_MODEL", llm.model),
             ("VIRUSTOTAL_API_KEY", cfg.virustotal_api_key),
-            ("AI_DEFENSE_API_KEY", cfg.aidefense_api_key),
+            ("AI_DEFENSE_API_KEY", aid.resolved_api_key()),
         ]
         for env_var, value in mappings:
             if value and env_var not in os.environ:

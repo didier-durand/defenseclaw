@@ -439,9 +439,9 @@ func toVerdict(s string) Verdict {
 func (w *InstallWatcher) scannerFor(evt InstallEvent) scanner.Scanner {
 	switch evt.Type {
 	case InstallSkill:
-		return scanner.NewSkillScanner(w.cfg.Scanners.SkillScanner)
+		return scanner.NewSkillScanner(w.cfg.Scanners.SkillScanner, w.cfg.InspectLLM, w.cfg.CiscoAIDefense)
 	case InstallMCP:
-		return scanner.NewMCPScanner(w.cfg.Scanners.MCPScanner)
+		return scanner.NewMCPScanner(w.cfg.Scanners.MCPScanner, w.cfg.InspectLLM, w.cfg.CiscoAIDefense)
 
 	case InstallPlugin:
 		return scanner.NewPluginScanner(w.cfg.Scanners.PluginScanner)

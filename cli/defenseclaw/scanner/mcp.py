@@ -21,7 +21,7 @@ import tempfile
 from datetime import datetime, timedelta, timezone
 from typing import TYPE_CHECKING
 
-from defenseclaw.config import MCPScannerConfig, MCPServerEntry
+from defenseclaw.config import CiscoAIDefenseConfig, InspectLLMConfig, MCPScannerConfig, MCPServerEntry
 from defenseclaw.models import Finding, ScanResult
 
 if TYPE_CHECKING:
@@ -41,29 +41,37 @@ _PROVIDER_ENV_VARS: dict[str, str] = {
 class MCPScannerWrapper:
     """Wraps the cisco-ai-mcp-scanner SDK."""
 
-    def __init__(self, config: MCPScannerConfig) -> None:
+    def __init__(
+        self,
+        config: MCPScannerConfig,
+        inspect_llm: InspectLLMConfig | None = None,
+        cisco_ai_defense: CiscoAIDefenseConfig | None = None,
+    ) -> None:
         self.config = config
+        self.inspect_llm = inspect_llm or InspectLLMConfig()
+        self.cisco_ai_defense = cisco_ai_defense or CiscoAIDefenseConfig()
 
     def name(self) -> str:
         return "mcp-scanner"
 
     def _resolve_llm_base_url(self) -> str:
         """Resolve the LLM base URL from explicit config or provider name."""
-        cfg = self.config
-        if cfg.llm_base_url:
-            return cfg.llm_base_url
-        provider = cfg.llm_provider.lower().strip()
+        llm = self.inspect_llm
+        if llm.base_url:
+            return llm.base_url
+        provider = llm.provider.lower().strip()
         return _PROVIDER_BASE_URLS.get(provider, "")
 
     def _inject_env(self) -> None:
         """Inject LLM API key into provider-specific env var if not set."""
-        cfg = self.config
-        if not cfg.llm_api_key:
+        llm = self.inspect_llm
+        api_key = llm.resolved_api_key()
+        if not api_key:
             return
-        provider = cfg.llm_provider.lower().strip()
+        provider = llm.provider.lower().strip()
         env_var = _PROVIDER_ENV_VARS.get(provider)
         if env_var and env_var not in os.environ:
-            os.environ[env_var] = cfg.llm_api_key
+            os.environ[env_var] = api_key
 
     def scan(self, target: str, server_entry: MCPServerEntry | None = None) -> ScanResult:
         import time
@@ -86,17 +94,18 @@ class MCPScannerWrapper:
             )
             raise SystemExit(1)
 
-        cfg = self.config
+        llm = self.inspect_llm
+        aid = self.cisco_ai_defense
         self._inject_env()
 
         sdk_config = MCPConfig(
-            api_key=cfg.api_key,
-            endpoint_url=cfg.endpoint_url,
-            llm_provider_api_key=cfg.llm_api_key,
-            llm_model=cfg.llm_model,
+            api_key=aid.resolved_api_key(),
+            endpoint_url=aid.endpoint,
+            llm_provider_api_key=llm.resolved_api_key(),
+            llm_model=llm.model,
             llm_base_url=self._resolve_llm_base_url(),
-            llm_timeout=cfg.llm_timeout,
-            llm_max_retries=cfg.llm_max_retries,
+            llm_timeout=llm.timeout,
+            llm_max_retries=llm.max_retries,
         )
 
         scanner = MCPSDKScanner(sdk_config)

@@ -136,22 +136,19 @@ def _enable_codeguard_in_openclaw(openclaw_config: str) -> None:
 
 
 def _find_skill_source() -> str | None:
-    """Locate the ``skills/codeguard/`` directory shipped in the repo."""
+    """Locate the ``skills/codeguard/`` directory in bundled package data or repo tree."""
     this_file = os.path.abspath(__file__)
     cli_pkg = os.path.dirname(this_file)
-    repo_root = os.path.dirname(os.path.dirname(cli_pkg))
 
+    bundled = os.path.join(cli_pkg, "_data", "skills", "codeguard")
+    if os.path.isdir(bundled) and os.path.isfile(os.path.join(bundled, "SKILL.md")):
+        return bundled
+
+    repo_root = os.path.dirname(os.path.dirname(cli_pkg))
     candidates = [
         os.path.join(repo_root, "skills", "codeguard"),
         os.path.join(os.path.dirname(cli_pkg), "skills", "codeguard"),
     ]
-
-    try:
-        import importlib.resources as _res
-        pkg_dir = str(_res.files("defenseclaw").joinpath(".."))
-        candidates.append(os.path.join(pkg_dir, "skills", "codeguard"))
-    except Exception:
-        pass
 
     for c in candidates:
         resolved = os.path.realpath(c)

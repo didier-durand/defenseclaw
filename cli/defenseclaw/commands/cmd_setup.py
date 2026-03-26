@@ -44,12 +44,14 @@ def setup_skill_scanner(
     Interactively configure how skill-scanner runs. Enables LLM analysis,
     behavioral dataflow analysis, meta-analyzer filtering, and more.
 
-    API keys are stored in ~/.defenseclaw/config.yaml and injected as
-    environment variables when skill-scanner runs.
+    LLM and Cisco AI Defense settings are stored in the shared
+    inspect_llm and cisco_ai_defense config sections.
 
     Use --non-interactive with flags for CI/scripted configuration.
     """
     sc = app.cfg.scanners.skill_scanner
+    llm = app.cfg.inspect_llm
+    aid = app.cfg.cisco_ai_defense
 
     if non_interactive:
         if use_llm is not None:
@@ -65,9 +67,9 @@ def setup_skill_scanner(
         if use_aidefense is not None:
             sc.use_aidefense = use_aidefense
         if llm_provider is not None:
-            sc.llm_provider = llm_provider
+            llm.provider = llm_provider
         if llm_model is not None:
-            sc.llm_model = llm_model
+            llm.model = llm_model
         if llm_consensus_runs is not None:
             sc.llm_consensus_runs = llm_consensus_runs
         if policy is not None:
@@ -75,21 +77,21 @@ def setup_skill_scanner(
         if lenient is not None:
             sc.lenient = lenient
     else:
-        _interactive_setup(sc)
+        _interactive_setup(sc, llm, aid)
 
     app.cfg.save()
-    _print_summary(sc)
+    _print_summary(sc, llm, aid)
 
     if app.logger:
         parts = [f"use_llm={sc.use_llm}", f"use_behavioral={sc.use_behavioral}", f"enable_meta={sc.enable_meta}"]
-        if sc.llm_provider:
-            parts.append(f"llm_provider={sc.llm_provider}")
+        if llm.provider:
+            parts.append(f"llm_provider={llm.provider}")
         if sc.policy:
             parts.append(f"policy={sc.policy}")
         app.logger.log_action("setup-skill-scanner", "config", " ".join(parts))
 
 
-def _interactive_setup(sc) -> None:
+def _interactive_setup(sc, llm, aid) -> None:
     click.echo()
     click.echo("  Skill Scanner Configuration")
     click.echo("  ────────────────────────────")
@@ -100,16 +102,11 @@ def _interactive_setup(sc) -> None:
     sc.use_llm = click.confirm("  Enable LLM analyzer (semantic analysis)?", default=sc.use_llm)
 
     if sc.use_llm:
-        sc.llm_provider = click.prompt(
-            "  LLM provider (anthropic/openai)",
-            default=sc.llm_provider or "anthropic",
-        )
-        sc.llm_model = click.prompt("  LLM model name", default=sc.llm_model or "", show_default=False)
+        _configure_inspect_llm(llm)
         sc.enable_meta = click.confirm("  Enable meta-analyzer (false positive filtering)?", default=sc.enable_meta)
         sc.llm_consensus_runs = click.prompt(
             "  LLM consensus runs (0 = disabled)", type=int, default=sc.llm_consensus_runs,
         )
-        sc.llm_api_key = _prompt_secret("SKILL_SCANNER_LLM_API_KEY", sc.llm_api_key)
 
     sc.use_trigger = click.confirm("  Enable trigger analyzer (vague description checks)?", default=sc.use_trigger)
     sc.use_virustotal = click.confirm("  Enable VirusTotal binary scanner?", default=sc.use_virustotal)
@@ -118,7 +115,7 @@ def _interactive_setup(sc) -> None:
 
     sc.use_aidefense = click.confirm("  Enable Cisco AI Defense analyzer?", default=sc.use_aidefense)
     if sc.use_aidefense:
-        sc.aidefense_api_key = _prompt_secret("AI_DEFENSE_API_KEY", sc.aidefense_api_key)
+        _configure_cisco_ai_defense(aid)
 
     click.echo()
     choices = ["strict", "balanced", "permissive"]
@@ -132,6 +129,31 @@ def _interactive_setup(sc) -> None:
         sc.policy = ""
 
     sc.lenient = click.confirm("  Lenient mode (tolerate malformed skills)?", default=sc.lenient)
+
+
+def _configure_inspect_llm(llm) -> None:
+    """Prompt for shared inspect_llm settings (provider, model, API key)."""
+    llm.provider = click.prompt(
+        "  LLM provider (anthropic/openai)",
+        default=llm.provider or "anthropic",
+    )
+    llm.model = click.prompt("  LLM model name", default=llm.model or "", show_default=False)
+    llm.api_key = _prompt_secret("LLM_API_KEY", llm.api_key)
+    llm.base_url = click.prompt(
+        "  LLM base URL (leave blank to use provider default)",
+        default=llm.base_url or "", show_default=False,
+    )
+    llm.timeout = click.prompt("  LLM timeout (seconds)", type=int, default=llm.timeout)
+    llm.max_retries = click.prompt("  LLM max retries", type=int, default=llm.max_retries)
+
+
+def _configure_cisco_ai_defense(aid) -> None:
+    """Prompt for shared cisco_ai_defense settings (endpoint, API key)."""
+    aid.endpoint = click.prompt(
+        "  Cisco AI Defense endpoint URL",
+        default=aid.endpoint,
+    )
+    aid.api_key = _prompt_secret("CISCO_AI_DEFENSE_API_KEY", aid.api_key)
 
 
 def _prompt_secret(env_name: str, current: str) -> str:
@@ -184,41 +206,41 @@ def _write_dotenv(path: str, entries: dict[str, str]) -> None:
         f.writelines(lines)
 
 
-def _print_summary(sc) -> None:
+def _print_summary(sc, llm, aid) -> None:
     click.echo()
     click.echo("  Saved to ~/.defenseclaw/config.yaml")
     click.echo()
 
-    rows = [
-        ("use_behavioral", str(sc.use_behavioral).lower()),
-        ("use_llm", str(sc.use_llm).lower()),
+    rows: list[tuple[str, str, str]] = [
+        ("scanners.skill_scanner", "use_behavioral", str(sc.use_behavioral).lower()),
+        ("scanners.skill_scanner", "use_llm", str(sc.use_llm).lower()),
     ]
     if sc.use_llm:
-        rows.append(("llm_provider", sc.llm_provider))
-        if sc.llm_model:
-            rows.append(("llm_model", sc.llm_model))
-        rows.append(("enable_meta", str(sc.enable_meta).lower()))
+        rows.append(("inspect_llm", "provider", llm.provider))
+        if llm.model:
+            rows.append(("inspect_llm", "model", llm.model))
+        rows.append(("scanners.skill_scanner", "enable_meta", str(sc.enable_meta).lower()))
         if sc.llm_consensus_runs > 0:
-            rows.append(("llm_consensus_runs", str(sc.llm_consensus_runs)))
-        if sc.llm_api_key:
-            rows.append(("llm_api_key", _mask(sc.llm_api_key)))
+            rows.append(("scanners.skill_scanner", "llm_consensus_runs", str(sc.llm_consensus_runs)))
+        api_key = llm.resolved_api_key()
+        if api_key:
+            rows.append(("inspect_llm", "api_key", _mask(api_key)))
     if sc.use_trigger:
-        rows.append(("use_trigger", "true"))
+        rows.append(("scanners.skill_scanner", "use_trigger", "true"))
     if sc.use_virustotal:
-        rows.append(("use_virustotal", "true"))
+        rows.append(("scanners.skill_scanner", "use_virustotal", "true"))
         if sc.virustotal_api_key:
-            rows.append(("virustotal_api_key", _mask(sc.virustotal_api_key)))
+            rows.append(("scanners.skill_scanner", "virustotal_api_key", _mask(sc.virustotal_api_key)))
     if sc.use_aidefense:
-        rows.append(("use_aidefense", "true"))
-        if sc.aidefense_api_key:
-            rows.append(("aidefense_api_key", _mask(sc.aidefense_api_key)))
+        rows.append(("scanners.skill_scanner", "use_aidefense", "true"))
+        rows.append(("cisco_ai_defense", "endpoint", aid.endpoint))
     if sc.policy:
-        rows.append(("policy", sc.policy))
+        rows.append(("scanners.skill_scanner", "policy", sc.policy))
     if sc.lenient:
-        rows.append(("lenient", "true"))
+        rows.append(("scanners.skill_scanner", "lenient", "true"))
 
-    for key, val in rows:
-        click.echo(f"    scanners.skill_scanner.{key + ':':<22s} {val}")
+    for section, key, val in rows:
+        click.echo(f"    {section}.{key + ':':<22s} {val}")
     click.echo()
 
 
@@ -228,12 +250,8 @@ def _print_summary(sc) -> None:
 
 @setup.command("mcp-scanner")
 @click.option("--analyzers", default=None, help="Comma-separated analyzer list (yara,api,llm,behavioral,readiness)")
-@click.option("--endpoint-url", default=None, help="MCP scanner API endpoint URL")
 @click.option("--llm-provider", default=None, help="LLM provider (anthropic or openai)")
 @click.option("--llm-model", default=None, help="LLM model for semantic analysis")
-@click.option("--llm-base-url", default=None, help="LLM API base URL (overrides provider default)")
-@click.option("--llm-timeout", type=int, default=None, help="LLM request timeout (seconds)")
-@click.option("--llm-max-retries", type=int, default=None, help="LLM max retries")
 @click.option("--scan-prompts", is_flag=True, default=None, help="Scan MCP prompts")
 @click.option("--scan-resources", is_flag=True, default=None, help="Scan MCP resources")
 @click.option("--scan-instructions", is_flag=True, default=None, help="Scan server instructions")
@@ -241,36 +259,32 @@ def _print_summary(sc) -> None:
 @pass_ctx
 def setup_mcp_scanner(
     app: AppContext,
-    analyzers, endpoint_url,
-    llm_provider, llm_model, llm_base_url, llm_timeout, llm_max_retries,
+    analyzers,
+    llm_provider, llm_model,
     scan_prompts, scan_resources, scan_instructions,
     non_interactive,
 ) -> None:
-    """Configure mcp-scanner analyzers and API keys.
+    """Configure mcp-scanner analyzers and scan options.
 
     Interactively configure how mcp-scanner runs. MCP servers are managed
     via ``defenseclaw mcp set/unset`` rather than directory watching.
 
-    API keys are stored in ~/.defenseclaw/config.yaml (not environment
-    variables). Use --non-interactive with flags for CI/scripted configuration.
+    LLM and Cisco AI Defense settings are stored in the shared
+    inspect_llm and cisco_ai_defense config sections.
+
+    Use --non-interactive with flags for CI/scripted configuration.
     """
     mc = app.cfg.scanners.mcp_scanner
+    llm = app.cfg.inspect_llm
+    aid = app.cfg.cisco_ai_defense
 
     if non_interactive:
         if analyzers is not None:
             mc.analyzers = analyzers
-        if endpoint_url is not None:
-            mc.endpoint_url = endpoint_url
         if llm_provider is not None:
-            mc.llm_provider = llm_provider
+            llm.provider = llm_provider
         if llm_model is not None:
-            mc.llm_model = llm_model
-        if llm_base_url is not None:
-            mc.llm_base_url = llm_base_url
-        if llm_timeout is not None:
-            mc.llm_timeout = llm_timeout
-        if llm_max_retries is not None:
-            mc.llm_max_retries = llm_max_retries
+            llm.model = llm_model
         if scan_prompts is not None:
             mc.scan_prompts = scan_prompts
         if scan_resources is not None:
@@ -281,67 +295,46 @@ def setup_mcp_scanner(
         _interactive_mcp_setup(mc, app.cfg)
 
     app.cfg.save()
-    _print_mcp_summary(mc)
+    _print_mcp_summary(mc, llm, aid)
 
     if app.logger:
         parts = [f"analyzers={mc.analyzers or 'default'}"]
-        if mc.llm_provider:
-            parts.append(f"llm_provider={mc.llm_provider}")
-        if mc.llm_model:
-            parts.append(f"llm_model={mc.llm_model}")
+        if llm.provider:
+            parts.append(f"llm_provider={llm.provider}")
+        if llm.model:
+            parts.append(f"llm_model={llm.model}")
         parts.append("mcp_managed_via=openclaw_config")
         app.logger.log_action("setup-mcp-scanner", "config", " ".join(parts))
 
 
 def _interactive_mcp_setup(mc, cfg) -> None:
+    llm = cfg.inspect_llm
+    aid = cfg.cisco_ai_defense
+
     click.echo()
     click.echo("  MCP Scanner Configuration")
     click.echo("  ──────────────────────────")
     click.echo(f"  Binary: {mc.binary}")
     click.echo()
 
-    # 1. Base analyzers
     mc.analyzers = click.prompt(
         "  Analyzers (comma-separated, e.g. yara,behavioral,readiness)",
         default=mc.analyzers or "yara",
     )
 
-    # 2. LLM analyzer
-    use_llm = click.confirm("  Enable LLM analyzer?", default=bool(mc.llm_model))
+    use_llm = click.confirm("  Enable LLM analyzer?", default=bool(llm.model))
     if use_llm:
-        mc.llm_provider = click.prompt(
-            "  LLM provider (anthropic/openai)",
-            default=mc.llm_provider or "anthropic",
-        )
-        mc.llm_model = click.prompt("  LLM model name", default=mc.llm_model or "")
-        mc.llm_api_key = _prompt_secret("MCP_SCANNER_LLM_API_KEY", mc.llm_api_key)
-        mc.llm_base_url = click.prompt(
-            "  LLM base URL (leave blank to use provider default)",
-            default=mc.llm_base_url or "", show_default=False,
-        )
-        mc.llm_timeout = click.prompt("  LLM timeout (seconds)", type=int, default=mc.llm_timeout)
-        mc.llm_max_retries = click.prompt("  LLM max retries", type=int, default=mc.llm_max_retries)
+        _configure_inspect_llm(llm)
         if "llm" not in mc.analyzers:
             mc.analyzers = f"{mc.analyzers},llm" if mc.analyzers else "llm"
-    else:
-        mc.llm_provider = ""
-        mc.llm_model = ""
-        mc.llm_api_key = ""
 
-    # 3. API analyzer (Cisco AI Defense)
     click.echo()
     use_api = click.confirm("  Enable API analyzer (Cisco AI Defense)?", default=False)
     if use_api:
-        _default_endpoint = "https://us.api.inspect.aidefense.security.cisco.com"
-        mc.endpoint_url = click.prompt(
-            "  Cisco AI Defense endpoint URL",
-            default=mc.endpoint_url or _default_endpoint,
-        )
-        mc.api_key = _prompt_secret("CISCO_AI_DEFENSE_API_KEY", mc.api_key)
+        _configure_cisco_ai_defense(aid)
         if "api" not in mc.analyzers:
             mc.analyzers = f"{mc.analyzers},api" if mc.analyzers else "api"
 
-    # 4. Scan options
     click.echo()
     mc.scan_prompts = click.confirm("  Scan MCP prompts?", default=mc.scan_prompts)
     mc.scan_resources = click.confirm("  Scan MCP resources?", default=mc.scan_resources)
@@ -349,37 +342,32 @@ def _interactive_mcp_setup(mc, cfg) -> None:
 
 
 
-def _print_mcp_summary(mc) -> None:
+def _print_mcp_summary(mc, llm, aid) -> None:
     click.echo()
     click.echo("  Saved to ~/.defenseclaw/config.yaml")
     click.echo()
 
-    rows: list[tuple[str, str]] = [
-        ("analyzers", mc.analyzers or "(all)"),
+    rows: list[tuple[str, str, str]] = [
+        ("scanners.mcp_scanner", "analyzers", mc.analyzers or "(all)"),
     ]
-    if mc.llm_provider:
-        rows.append(("llm_provider", mc.llm_provider))
-    if mc.llm_model:
-        rows.append(("llm_model", mc.llm_model))
-        if mc.llm_base_url:
-            rows.append(("llm_base_url", mc.llm_base_url))
-        if mc.llm_api_key:
-            rows.append(("llm_api_key", _mask(mc.llm_api_key)))
-        rows.append(("llm_timeout", str(mc.llm_timeout)))
-        rows.append(("llm_max_retries", str(mc.llm_max_retries)))
-    if mc.endpoint_url:
-        rows.append(("endpoint_url", mc.endpoint_url))
-    if mc.api_key:
-        rows.append(("api_key", _mask(mc.api_key)))
+    if llm.provider:
+        rows.append(("inspect_llm", "provider", llm.provider))
+    if llm.model:
+        rows.append(("inspect_llm", "model", llm.model))
+        api_key = llm.resolved_api_key()
+        if api_key:
+            rows.append(("inspect_llm", "api_key", _mask(api_key)))
+    if aid.endpoint:
+        rows.append(("cisco_ai_defense", "endpoint", aid.endpoint))
     if mc.scan_prompts:
-        rows.append(("scan_prompts", "true"))
+        rows.append(("scanners.mcp_scanner", "scan_prompts", "true"))
     if mc.scan_resources:
-        rows.append(("scan_resources", "true"))
+        rows.append(("scanners.mcp_scanner", "scan_resources", "true"))
     if mc.scan_instructions:
-        rows.append(("scan_instructions", "true"))
+        rows.append(("scanners.mcp_scanner", "scan_instructions", "true"))
 
-    for key, val in rows:
-        click.echo(f"    scanners.mcp_scanner.{key + ':':<22s} {val}")
+    for section, key, val in rows:
+        click.echo(f"    {section}.{key + ':':<22s} {val}")
     click.echo()
 
 
@@ -554,13 +542,6 @@ def setup_guardrail(
 
     Use --disable to turn off the guardrail and restore direct LLM access.
     """
-    from defenseclaw.guardrail import (
-        generate_litellm_config,
-        install_guardrail_module,
-        install_openclaw_plugin,
-        patch_openclaw_config,
-        write_litellm_config,
-    )
 
     gc = app.cfg.guardrail
 
@@ -568,17 +549,19 @@ def setup_guardrail(
         _disable_guardrail(app, gc, restart=restart)
         return
 
+    aid = app.cfg.cisco_ai_defense
+
     if non_interactive:
         if guard_mode is not None:
             gc.mode = guard_mode
         if scanner_mode is not None:
             gc.scanner_mode = scanner_mode
         if cisco_endpoint is not None:
-            gc.cisco_ai_defense.endpoint = cisco_endpoint
+            aid.endpoint = cisco_endpoint
         if cisco_api_key_env is not None:
-            gc.cisco_ai_defense.api_key_env = cisco_api_key_env
+            aid.api_key_env = cisco_api_key_env
         if cisco_timeout_ms is not None:
-            gc.cisco_ai_defense.timeout_ms = cisco_timeout_ms
+            aid.timeout_ms = cisco_timeout_ms
         if guard_port is not None:
             gc.port = guard_port
         if block_message is not None:
@@ -591,6 +574,83 @@ def setup_guardrail(
         click.echo("  Guardrail not enabled. Run again without declining to configure.")
         return
 
+    ok, warnings = execute_guardrail_setup(app, save_config=True)
+    if not ok:
+        return
+
+    aid = app.cfg.cisco_ai_defense
+
+    # --- Summary ---
+    click.echo()
+    rows = [
+        ("guardrail.mode", gc.mode),
+        ("guardrail.port", str(gc.port)),
+        ("guardrail.model", gc.model),
+        ("guardrail.model_name", gc.model_name),
+        ("guardrail.api_key_env", gc.api_key_env),
+    ]
+    if gc.block_message:
+        truncated = gc.block_message[:60] + "..." if len(gc.block_message) > 60 else gc.block_message
+        rows.append(("guardrail.block_message", truncated))
+    if gc.scanner_mode in ("remote", "both"):
+        rows.append(("cisco_ai_defense.endpoint", aid.endpoint))
+        rows.append(("cisco_ai_defense.api_key_env", aid.api_key_env))
+        rows.append(("cisco_ai_defense.timeout_ms", str(aid.timeout_ms)))
+    for key, val in rows:
+        click.echo(f"    {key + ':':<30s} {val}")
+    click.echo()
+
+    if warnings:
+        click.echo("  ── Warnings ──────────────────────────────────────────")
+        for w in warnings:
+            click.echo(f"  ⚠ {w}")
+        click.echo()
+
+    data_dir = os.path.dirname(gc.litellm_config) if gc.litellm_config else os.path.expanduser("~/.defenseclaw")
+    if restart:
+        _restart_services(data_dir, app.cfg.gateway.host, app.cfg.gateway.port)
+    else:
+        click.echo("  Next steps:")
+        click.echo("    1. Restart the defenseclaw sidecar:")
+        click.echo("       defenseclaw-gateway restart")
+        click.echo("       (openclaw gateway auto-reloads — no restart needed)")
+        click.echo("    2. Or re-run with --restart:")
+        click.echo("       defenseclaw setup guardrail --restart")
+        click.echo()
+
+    click.echo("  To disable and revert:")
+    click.echo("    defenseclaw setup guardrail --disable")
+    click.echo()
+
+    if app.logger:
+        app.logger.log_action(
+            "setup-guardrail", "config",
+            f"mode={gc.mode} scanner_mode={gc.scanner_mode} port={gc.port} model={gc.model}",
+        )
+
+
+def execute_guardrail_setup(
+    app: AppContext,
+    *,
+    save_config: bool = True,
+) -> tuple[bool, list[str]]:
+    """Run guardrail setup steps 0–7.
+
+    Returns (success, warnings).  When *save_config* is False the caller
+    is responsible for calling ``app.cfg.save()`` (used by ``init`` which
+    saves once at the end).
+    """
+    from defenseclaw.commands.cmd_init import _install_litellm_proxy_extras, _litellm_proxy_ready
+    from defenseclaw.guardrail import (
+        _derive_master_key,
+        generate_litellm_config,
+        install_guardrail_module,
+        install_openclaw_plugin,
+        patch_openclaw_config,
+        write_litellm_config,
+    )
+
+    gc = app.cfg.guardrail
     warnings: list[str] = []
 
     # --- Pre-flight checks ---
@@ -602,17 +662,16 @@ def setup_guardrail(
         click.echo(f"  ✗ OpenClaw config not found: {app.cfg.claw.config_file}")
         click.echo("    Make sure OpenClaw is installed and initialized.")
         click.echo("    Expected location: ~/.openclaw/openclaw.json")
-        return
+        return False, warnings
 
     if not gc.model or not gc.model_name:
         click.echo("  ✗ Model or model_name is empty — cannot configure guardrail.")
         click.echo("    Run interactively (without --non-interactive) to set the model.")
-        return
+        return False, warnings
 
     click.echo()
 
     # --- Step 0: Ensure litellm[proxy] extras are installed ---
-    from defenseclaw.commands.cmd_init import _install_litellm_proxy_extras, _litellm_proxy_ready
     if _litellm_proxy_ready():
         click.echo("  ✓ LiteLLM proxy extras verified")
     else:
@@ -638,7 +697,7 @@ def setup_guardrail(
     else:
         click.echo(f"  ✗ Failed to write LiteLLM config: {err}")
         click.echo(f"    Check permissions on {os.path.dirname(gc.litellm_config)}")
-        return
+        return False, warnings
 
     # --- Step 2: Install guardrail module ---
     repo_source = _find_guardrail_source()
@@ -685,7 +744,6 @@ def setup_guardrail(
         )
 
     # --- Step 4: Patch OpenClaw config ---
-    from defenseclaw.guardrail import _derive_master_key
     master_key = _derive_master_key(app.cfg.gateway.device_key_file)
 
     prev_model = patch_openclaw_config(
@@ -708,19 +766,18 @@ def setup_guardrail(
         )
 
     # --- Step 5: Save DefenseClaw config ---
-    try:
-        app.cfg.save()
-        click.echo("  ✓ Config saved to ~/.defenseclaw/config.yaml")
-    except OSError as exc:
-        click.echo(f"  ✗ Failed to save config: {exc}")
-        warnings.append("Config not saved — settings will be lost on next run")
+    if save_config:
+        try:
+            app.cfg.save()
+            click.echo("  ✓ Config saved to ~/.defenseclaw/config.yaml")
+        except OSError as exc:
+            click.echo(f"  ✗ Failed to save config: {exc}")
+            warnings.append("Config not saved — settings will be lost on next run")
 
     if gc.original_model:
         click.echo(f"  ✓ Original model saved for revert: {gc.original_model}")
 
     # --- Step 6: Write .env file for API keys ---
-    # The sidecar runs as a daemon and won't inherit the user's shell env,
-    # so we persist API keys to ~/.defenseclaw/.env (mode 0600).
     if gc.api_key_env:
         env_val = os.environ.get(gc.api_key_env, "")
         dotenv_path = os.path.join(os.path.dirname(gc.litellm_config), ".env")
@@ -749,49 +806,7 @@ def setup_guardrail(
     # --- Step 7: Write guardrail_runtime.json ---
     _write_guardrail_runtime(app.cfg.data_dir, gc)
 
-    # --- Summary ---
-    click.echo()
-    rows = [
-        ("mode", gc.mode),
-        ("port", str(gc.port)),
-        ("model", gc.model),
-        ("model_name", gc.model_name),
-        ("api_key_env", gc.api_key_env),
-    ]
-    if gc.block_message:
-        truncated = gc.block_message[:60] + "..." if len(gc.block_message) > 60 else gc.block_message
-        rows.append(("block_message", truncated))
-    for key, val in rows:
-        click.echo(f"    guardrail.{key + ':':<16s} {val}")
-    click.echo()
-
-    if warnings:
-        click.echo("  ── Warnings ──────────────────────────────────────────")
-        for w in warnings:
-            click.echo(f"  ⚠ {w}")
-        click.echo()
-
-    data_dir = os.path.dirname(gc.litellm_config) if gc.litellm_config else os.path.expanduser("~/.defenseclaw")
-    if restart:
-        _restart_services(data_dir, app.cfg.gateway.host, app.cfg.gateway.port)
-    else:
-        click.echo("  Next steps:")
-        click.echo("    1. Restart the defenseclaw sidecar:")
-        click.echo("       defenseclaw-gateway restart")
-        click.echo("       (openclaw gateway auto-reloads — no restart needed)")
-        click.echo("    2. Or re-run with --restart:")
-        click.echo("       defenseclaw setup guardrail --restart")
-        click.echo()
-
-    click.echo("  To disable and revert:")
-    click.echo("    defenseclaw setup guardrail --disable")
-    click.echo()
-
-    if app.logger:
-        app.logger.log_action(
-            "setup-guardrail", "config",
-            f"mode={gc.mode} scanner_mode={gc.scanner_mode} port={gc.port} model={gc.model}",
-        )
+    return True, warnings
 
 
 def _interactive_guardrail_setup(app: AppContext, gc) -> None:
@@ -850,21 +865,22 @@ def _interactive_guardrail_setup(app: AppContext, gc) -> None:
         click.echo()
         click.echo("  Cisco AI Defense Configuration")
         click.echo("  ──────────────────────────────")
-        gc.cisco_ai_defense.endpoint = click.prompt(
-            "  API endpoint", default=gc.cisco_ai_defense.endpoint,
+        aid = app.cfg.cisco_ai_defense
+        aid.endpoint = click.prompt(
+            "  API endpoint", default=aid.endpoint,
         )
-        cisco_key_env = gc.cisco_ai_defense.api_key_env or "CISCO_AI_DEFENSE_API_KEY"
+        cisco_key_env = aid.api_key_env or "CISCO_AI_DEFENSE_API_KEY"
         env_val = os.environ.get(cisco_key_env, "")
         if env_val:
             click.echo(f"  API key env var: {cisco_key_env} ({_mask(env_val)})")
         else:
             click.echo(f"  API key env var: {cisco_key_env} (not set)")
             click.echo(f"    Set it before starting: export {cisco_key_env}=your-key")
-        gc.cisco_ai_defense.api_key_env = click.prompt(
+        aid.api_key_env = click.prompt(
             "  API key env var name", default=cisco_key_env,
         )
-        gc.cisco_ai_defense.timeout_ms = click.prompt(
-            "  Timeout (ms)", default=gc.cisco_ai_defense.timeout_ms, type=int,
+        aid.timeout_ms = click.prompt(
+            "  Timeout (ms)", default=aid.timeout_ms, type=int,
         )
 
     gc.port = click.prompt("  LiteLLM proxy port", default=gc.port or 4000, type=int)
@@ -1020,14 +1036,17 @@ def _write_guardrail_runtime(data_dir: str, gc) -> None:
 
 
 def _find_guardrail_source() -> str | None:
-    """Locate the guardrail module in the repo or package."""
+    """Locate the guardrail module in bundled package data or repo tree."""
+    pkg_dir = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+    bundled = os.path.join(pkg_dir, "_data", "guardrails", "defenseclaw_guardrail.py")
+    if os.path.isfile(bundled):
+        return bundled
+
     candidates = [
         os.path.join(os.path.dirname(__file__), "..", "..", "..", "guardrails", "defenseclaw_guardrail.py"),
         os.path.join(os.path.dirname(__file__), "..", "guardrails", "defenseclaw_guardrail.py"),
     ]
-    # Also check relative to the repo root if we can detect it
     try:
-        pkg_dir = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
         repo_root = os.path.dirname(os.path.dirname(pkg_dir))
         candidates.append(os.path.join(repo_root, "guardrails", "defenseclaw_guardrail.py"))
     except Exception:
@@ -1058,10 +1077,6 @@ def _print_guardrail_summary(gc, openclaw_config_file: str, *, restart: bool = F
         ("model_name", gc.model_name),
         ("api_key_env", gc.api_key_env),
     ]
-    if gc.scanner_mode in ("remote", "both"):
-        rows.append(("cisco_endpoint", gc.cisco_ai_defense.endpoint))
-        rows.append(("cisco_api_key_env", gc.cisco_ai_defense.api_key_env))
-        rows.append(("cisco_timeout_ms", str(gc.cisco_ai_defense.timeout_ms)))
     for key, val in rows:
         click.echo(f"    guardrail.{key + ':':<16s} {val}")
     click.echo()

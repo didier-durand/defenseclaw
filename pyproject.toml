@@ -34,6 +34,18 @@ build-backend = "setuptools.build_meta"
 
 [tool.setuptools.packages.find]
 where = ["cli"]
+exclude = ["tests", "tests.*"]
+
+[tool.setuptools.package-data]
+defenseclaw = [
+    "_data/guardrails/*.py",
+    "_data/policies/*.yaml",
+    "_data/policies/rego/*.rego",
+    "_data/policies/rego/*.json",
+    "_data/skills/codeguard/*.md",
+    "_data/skills/codeguard/*.yaml",
+    "_data/skills/codeguard/*.py",
+]
 
 [tool.uv]
 default-groups = ["dev"]

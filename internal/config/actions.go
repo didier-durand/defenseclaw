@@ -7,8 +7,8 @@ import (
 
 func DefaultSkillActions() SkillActionsConfig {
 	return SkillActionsConfig{
-		Critical: SeverityAction{File: FileActionQuarantine, Runtime: RuntimeDisable, Install: InstallBlock},
-		High:     SeverityAction{File: FileActionQuarantine, Runtime: RuntimeDisable, Install: InstallBlock},
+		Critical: SeverityAction{File: FileActionNone, Runtime: RuntimeEnable, Install: InstallNone},
+		High:     SeverityAction{File: FileActionNone, Runtime: RuntimeEnable, Install: InstallNone},
 		Medium:   SeverityAction{File: FileActionNone, Runtime: RuntimeEnable, Install: InstallNone},
 		Low:      SeverityAction{File: FileActionNone, Runtime: RuntimeEnable, Install: InstallNone},
 		Info:     SeverityAction{File: FileActionNone, Runtime: RuntimeEnable, Install: InstallNone},

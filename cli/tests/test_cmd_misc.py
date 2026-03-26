@@ -1,11 +1,9 @@
-"""Tests for miscellaneous CLI commands — status, alerts, sidecar, deploy, setup, aibom."""
+"""Tests for miscellaneous CLI commands — status, alerts, setup, aibom."""
 
-import json
 import os
-import shutil
 import tempfile
 import unittest
-from datetime import datetime, timedelta, timezone
+from datetime import datetime, timezone
 from unittest.mock import MagicMock, patch
 
 import sys
@@ -13,7 +11,7 @@ sys.path.insert(0, os.path.abspath(os.path.join(os.path.dirname(__file__), "..")
 
 from click.testing import CliRunner
 
-from defenseclaw.models import Event, Finding, ScanResult
+from defenseclaw.models import Event
 from tests.helpers import make_app_context, cleanup_app
 
 
@@ -150,78 +148,6 @@ class TestAlertsCommand(unittest.TestCase):
 
 
 # ---------------------------------------------------------------------------
-# Sidecar command
-# ---------------------------------------------------------------------------
-
-class TestSidecarCommand(unittest.TestCase):
-    def setUp(self):
-        self.app, self.tmp_dir, self.db_path = make_app_context()
-        self.runner = CliRunner()
-
-    def tearDown(self):
-        cleanup_app(self.app, self.db_path, self.tmp_dir)
-
-    def test_sidecar_help(self):
-        from defenseclaw.commands.cmd_sidecar import sidecar
-        result = self.runner.invoke(sidecar, ["--help"])
-        self.assertEqual(result.exit_code, 0, result.output)
-        self.assertIn("sidecar", result.output)
-
-    def test_sidecar_no_subcommand_shows_info(self):
-        from defenseclaw.commands.cmd_sidecar import sidecar
-        result = self.runner.invoke(sidecar, [], obj=self.app, catch_exceptions=False)
-        self.assertEqual(result.exit_code, 0, result.output)
-        self.assertIn("Gateway Sidecar", result.output)
-        self.assertIn("Go binary", result.output)
-
-    @patch("defenseclaw.gateway.OrchestratorClient")
-    def test_sidecar_status_not_running(self, mock_cls):
-        from defenseclaw.commands.cmd_sidecar import sidecar
-
-        mock_client = MagicMock()
-        mock_client.is_running.return_value = False
-        mock_cls.return_value = mock_client
-
-        result = self.runner.invoke(sidecar, ["status"], obj=self.app, catch_exceptions=False)
-        self.assertEqual(result.exit_code, 0, result.output)
-        self.assertIn("NOT RUNNING", result.output)
-
-    @patch("defenseclaw.gateway.OrchestratorClient")
-    def test_sidecar_status_running(self, mock_cls):
-        from defenseclaw.commands.cmd_sidecar import sidecar
-
-        mock_client = MagicMock()
-        mock_client.is_running.return_value = True
-        mock_client.health.return_value = {
-            "started_at": "2026-01-01T00:00:00Z",
-            "uptime_ms": 60000,
-            "gateway": {"state": "connected", "since": "2026-01-01"},
-            "watcher": {"state": "running", "since": "2026-01-01"},
-            "api": {"state": "listening", "since": "2026-01-01"},
-        }
-        mock_cls.return_value = mock_client
-
-        result = self.runner.invoke(sidecar, ["status"], obj=self.app, catch_exceptions=False)
-        self.assertEqual(result.exit_code, 0, result.output)
-        self.assertIn("Sidecar Health", result.output)
-        self.assertIn("CONNECTED", result.output)
-
-
-class TestSidecarFormatDuration(unittest.TestCase):
-    def test_seconds(self):
-        from defenseclaw.commands.cmd_sidecar import _format_duration
-        self.assertEqual(_format_duration(5000), "5s")
-
-    def test_minutes(self):
-        from defenseclaw.commands.cmd_sidecar import _format_duration
-        self.assertEqual(_format_duration(90000), "1m 30s")
-
-    def test_hours(self):
-        from defenseclaw.commands.cmd_sidecar import _format_duration
-        self.assertEqual(_format_duration(3661000), "1h 1m 1s")
-
-
-# ---------------------------------------------------------------------------
 # Setup command (non-interactive)
 # ---------------------------------------------------------------------------
 
@@ -284,11 +210,9 @@ class TestSetupHelpers(unittest.TestCase):
         self.assertIn("...", result)
 
 
-# ---------------------------------------------------------------------------
-# Deploy command
-# ---------------------------------------------------------------------------
+class TestSetupSkillScannerCommonConfig(unittest.TestCase):
+    """Verify setup skill-scanner --non-interactive writes to inspect_llm."""
 
-class TestDeployCommand(unittest.TestCase):
     def setUp(self):
         self.app, self.tmp_dir, self.db_path = make_app_context()
         self.runner = CliRunner()
@@ -296,116 +220,99 @@ class TestDeployCommand(unittest.TestCase):
     def tearDown(self):
         cleanup_app(self.app, self.db_path, self.tmp_dir)
 
-    @patch("defenseclaw.commands.cmd_deploy.shutil.which", return_value=None)
-    @patch("defenseclaw.commands.cmd_deploy._run_all_scanners")
-    @patch("defenseclaw.commands.cmd_deploy._ensure_init")
-    def test_deploy_skip_init(self, mock_init, mock_scanners, _mock_which):
-        from defenseclaw.commands.cmd_deploy import deploy
-
-        mock_scanners.return_value = []
+    def test_llm_provider_written_to_inspect_llm(self):
+        from defenseclaw.commands.cmd_setup import setup
 
         result = self.runner.invoke(
-            deploy, ["--skip-init", "."],
-            obj=self.app, catch_exceptions=False,
+            setup,
+            ["skill-scanner", "--non-interactive", "--use-llm",
+             "--llm-provider", "openai", "--llm-model", "gpt-4o"],
+            obj=self.app,
+            catch_exceptions=False,
         )
         self.assertEqual(result.exit_code, 0, result.output)
-        self.assertIn("Init skipped", result.output)
-        self.assertIn("Deploy Summary", result.output)
-        mock_init.assert_not_called()
+        self.assertEqual(self.app.cfg.inspect_llm.provider, "openai")
+        self.assertEqual(self.app.cfg.inspect_llm.model, "gpt-4o")
+        self.assertTrue(self.app.cfg.scanners.skill_scanner.use_llm)
 
-    @patch("defenseclaw.commands.cmd_deploy.shutil.which", return_value=None)
-    @patch("defenseclaw.commands.cmd_deploy._run_all_scanners")
-    @patch("defenseclaw.commands.cmd_deploy._ensure_init")
-    def test_deploy_logs_action(self, mock_init, mock_scanners, _mock_which):
-        from defenseclaw.commands.cmd_deploy import deploy
-
-        mock_scanners.return_value = []
-
-        self.runner.invoke(
-            deploy, ["--skip-init", "."],
-            obj=self.app, catch_exceptions=False,
-        )
-        events = self.app.store.list_events(10)
-        deploy_events = [e for e in events if e.action == "deploy"]
-        self.assertEqual(len(deploy_events), 1)
-
-    @patch("defenseclaw.commands.cmd_deploy.shutil.which", return_value=None)
-    @patch("defenseclaw.commands.cmd_deploy._run_all_scanners")
-    @patch("defenseclaw.commands.cmd_deploy._ensure_init")
-    def test_deploy_auto_blocks_high_findings(self, mock_init, mock_scanners, _mock_which):
-        from defenseclaw.commands.cmd_deploy import deploy
-
-        mock_scanners.return_value = [
-            ("skill-scanner", ".", ScanResult(
-                scanner="skill-scanner", target="/skill/bad",
-                timestamp=datetime.now(timezone.utc),
-                findings=[Finding(id="f1", severity="HIGH", title="Bad", scanner="skill-scanner")],
-            ), ""),
-        ]
+    def test_summary_shows_inspect_llm_section(self):
+        from defenseclaw.commands.cmd_setup import setup
 
         result = self.runner.invoke(
-            deploy, ["--skip-init", "."],
-            obj=self.app, catch_exceptions=False,
+            setup,
+            ["skill-scanner", "--non-interactive", "--use-llm",
+             "--llm-provider", "anthropic"],
+            obj=self.app,
+            catch_exceptions=False,
         )
         self.assertEqual(result.exit_code, 0, result.output)
-        self.assertIn("Auto-blocked 1", result.output)
+        self.assertIn("inspect_llm.provider", result.output)
 
-    @patch("defenseclaw.commands.cmd_deploy.shutil.which", return_value=None)
-    @patch("defenseclaw.commands.cmd_deploy._run_all_scanners")
-    @patch("defenseclaw.commands.cmd_deploy._ensure_init")
-    def test_deploy_summary_shows_findings(self, mock_init, mock_scanners, _mock_which):
-        from defenseclaw.commands.cmd_deploy import deploy
-
-        mock_scanners.return_value = [
-            ("skill-scanner", ".", ScanResult(
-                scanner="skill-scanner", target="/skill/test",
-                timestamp=datetime.now(timezone.utc),
-                findings=[
-                    Finding(id="f1", severity="MEDIUM", title="Warning", scanner="skill-scanner"),
-                    Finding(id="f2", severity="LOW", title="Minor", scanner="skill-scanner"),
-                ],
-            ), ""),
-            ("mcp-scanner", ".", ScanResult(
-                scanner="mcp-scanner", target=".",
-                timestamp=datetime.now(timezone.utc),
-                findings=[],
-            ), ""),
-        ]
+    def test_aidefense_flag_still_on_scanner_config(self):
+        from defenseclaw.commands.cmd_setup import setup
 
         result = self.runner.invoke(
-            deploy, ["--skip-init", "."],
-            obj=self.app, catch_exceptions=False,
+            setup,
+            ["skill-scanner", "--non-interactive", "--use-aidefense"],
+            obj=self.app,
+            catch_exceptions=False,
         )
         self.assertEqual(result.exit_code, 0, result.output)
-        self.assertIn("Total findings:   2", result.output)
-        self.assertIn("Max severity:     MEDIUM", result.output)
+        self.assertTrue(self.app.cfg.scanners.skill_scanner.use_aidefense)
 
 
-class TestDeployHelpers(unittest.TestCase):
-    def test_auto_block_skips_clean_results(self):
-        from defenseclaw.commands.cmd_deploy import _auto_block
-        from tests.helpers import make_app_context, cleanup_app
+class TestSetupMCPScannerCommonConfig(unittest.TestCase):
+    """Verify setup mcp-scanner --non-interactive writes to inspect_llm."""
 
-        app, tmp_dir, db_path = make_app_context()
-        runs = [
-            ("skill-scanner", ".", ScanResult(
-                scanner="skill-scanner", target="/clean",
-                timestamp=datetime.now(timezone.utc), findings=[],
-            ), ""),
-        ]
-        blocked = _auto_block(app, runs)
-        self.assertEqual(blocked, 0)
-        cleanup_app(app, db_path, tmp_dir)
+    def setUp(self):
+        self.app, self.tmp_dir, self.db_path = make_app_context()
+        self.runner = CliRunner()
 
-    def test_auto_block_skips_errors(self):
-        from defenseclaw.commands.cmd_deploy import _auto_block
-        from tests.helpers import make_app_context, cleanup_app
+    def tearDown(self):
+        cleanup_app(self.app, self.db_path, self.tmp_dir)
 
-        app, tmp_dir, db_path = make_app_context()
-        runs = [("skill-scanner", ".", None, "not installed")]
-        blocked = _auto_block(app, runs)
-        self.assertEqual(blocked, 0)
-        cleanup_app(app, db_path, tmp_dir)
+    def test_llm_provider_written_to_inspect_llm(self):
+        from defenseclaw.commands.cmd_setup import setup
+
+        result = self.runner.invoke(
+            setup,
+            ["mcp-scanner", "--non-interactive",
+             "--llm-provider", "openai", "--llm-model", "gpt-4o",
+             "--analyzers", "yara,llm"],
+            obj=self.app,
+            catch_exceptions=False,
+        )
+        self.assertEqual(result.exit_code, 0, result.output)
+        self.assertEqual(self.app.cfg.inspect_llm.provider, "openai")
+        self.assertEqual(self.app.cfg.inspect_llm.model, "gpt-4o")
+
+    def test_summary_shows_inspect_llm_section(self):
+        from defenseclaw.commands.cmd_setup import setup
+
+        result = self.runner.invoke(
+            setup,
+            ["mcp-scanner", "--non-interactive",
+             "--llm-provider", "anthropic", "--llm-model", "claude-sonnet-4-20250514"],
+            obj=self.app,
+            catch_exceptions=False,
+        )
+        self.assertEqual(result.exit_code, 0, result.output)
+        self.assertIn("inspect_llm.provider", result.output)
+        self.assertIn("inspect_llm.model", result.output)
+
+    def test_mcp_scanner_no_old_llm_flags(self):
+        """The old --endpoint-url, --llm-base-url, --llm-timeout, --llm-max-retries flags are gone."""
+        from defenseclaw.commands.cmd_setup import setup
+
+        result = self.runner.invoke(
+            setup,
+            ["mcp-scanner", "--help"],
+        )
+        self.assertEqual(result.exit_code, 0, result.output)
+        self.assertNotIn("--endpoint-url", result.output)
+        self.assertNotIn("--llm-base-url", result.output)
+        self.assertNotIn("--llm-timeout", result.output)
+        self.assertNotIn("--llm-max-retries", result.output)
 
 
 if __name__ == "__main__":

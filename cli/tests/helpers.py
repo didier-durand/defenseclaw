@@ -10,7 +10,7 @@ sys.path.insert(0, os.path.abspath(os.path.join(os.path.dirname(__file__), "..")
 
 from click.testing import CliRunner
 
-from defenseclaw.config import Config, GatewayConfig, MCPScannerConfig, ScannersConfig, SkillScannerConfig, SkillActionsConfig, OpenShellConfig, ClawConfig
+from defenseclaw.config import Config, GatewayConfig, MCPScannerConfig, ScannersConfig, SkillScannerConfig, SkillActionsConfig, OpenShellConfig, ClawConfig, InspectLLMConfig, CiscoAIDefenseConfig
 from defenseclaw.context import AppContext
 from defenseclaw.db import Store
 from defenseclaw.logger import Logger
@@ -42,7 +42,7 @@ def make_temp_config(tmp_dir: str | None = None) -> Config:
             mcp_scanner=MCPScannerConfig(binary="mcp-scanner"),
         ),
         openshell=OpenShellConfig(binary="openshell"),
-        gateway=GatewayConfig(host="127.0.0.1", api_port=18790),
+        gateway=GatewayConfig(host="127.0.0.1", api_port=18970),
         skill_actions=SkillActionsConfig(),
     )
 

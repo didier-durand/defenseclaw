@@ -1,53 +1,500 @@
 #!/usr/bin/env bash
-# DefenseClaw installer — downloads the latest release archive for the current platform.
-# Mirrors the root install.sh logic to match GoReleaser archive naming.
+#
+# DefenseClaw Installer
+#
+# Installs DefenseClaw from pre-built release artifacts.
+# No Go, Node.js, or git required — only Python and uv.
+#
+#   # From GitHub release (once public):
+#   curl -LsSf https://raw.githubusercontent.com/defenseclaw/defenseclaw/main/scripts/install.sh | bash
+#
+#   # From local dist/ directory (for testing):
+#   ./scripts/install.sh --local ./dist
+#
+# Options:
+#   --local <dir>  Install from a local dist directory instead of downloading
+#   --yes, -y      Skip confirmation prompts (for CI/automation)
+#   --help, -h     Show help
+#
 set -euo pipefail
 
-REPO="defenseclaw/defenseclaw"
-BINARY="defenseclaw"
-INSTALL_DIR="${INSTALL_DIR:-/usr/local/bin}"
+# Entire script wrapped in main() so bash parses everything before executing.
+# Critical for curl|sh safety — prevents partial execution on network drops.
+main() {
 
-OS="$(uname -s | tr '[:upper:]' '[:lower:]')"
-ARCH="$(uname -m)"
+# ── Configuration ─────────────────────────────────────────────────────────────
 
-case "${ARCH}" in
-    x86_64|amd64) ARCH="amd64" ;;
-    aarch64|arm64) ARCH="arm64" ;;
-    *)       echo "Unsupported architecture: ${ARCH}" >&2; exit 1 ;;
-esac
+readonly DEFENSECLAW_HOME="${DEFENSECLAW_HOME:-${HOME}/.defenseclaw}"
+readonly DEFENSECLAW_VENV="${DEFENSECLAW_HOME}/.venv"
+readonly INSTALL_DIR="${HOME}/.local/bin"
+readonly REPO="defenseclaw/defenseclaw"
+readonly OPENCLAW_VERSION="26.3.24"
 
-case "${OS}" in
-    linux|darwin) ;;
-    *) echo "Unsupported OS: ${OS}" >&2; exit 1 ;;
-esac
+# ── Terminal Formatting ───────────────────────────────────────────────────────
 
-echo "Detected: ${OS}/${ARCH}"
-echo "Installing ${BINARY} to ${INSTALL_DIR}..."
-
-if [ -n "${VERSION:-}" ]; then
-    LATEST="$VERSION"
+if [[ -t 1 ]] || [[ "${FORCE_COLOR:-}" == "1" ]]; then
+    RED='\033[0;31m'; GREEN='\033[0;32m'; YELLOW='\033[1;33m'
+    BLUE='\033[0;34m'; CYAN='\033[0;36m'; BOLD='\033[1m'
+    DIM='\033[2m'; NC='\033[0m'
 else
-    LATEST=$(curl -sSf "https://api.github.com/repos/${REPO}/releases/latest" \
-        | grep '"tag_name"' | head -1 | sed 's/.*"v/v/' | sed 's/".*//')
+    RED=''; GREEN=''; YELLOW=''; BLUE=''; CYAN=''; BOLD=''; DIM=''; NC=''
 fi
 
-URL="https://github.com/${REPO}/releases/download/${LATEST}/${BINARY}_${LATEST#v}_${OS}_${ARCH}.tar.gz"
+# ── Logging ───────────────────────────────────────────────────────────────────
 
-TMP="$(mktemp -d)"
-trap 'rm -rf "$TMP"' EXIT
+info()  { printf "${BLUE}  ▸${NC} %s\n" "$*"; }
+ok()    { printf "${GREEN}  ✓${NC} %s\n" "$*"; }
+warn()  { printf "${YELLOW}  !${NC} %s\n" "$*"; }
+err()   { printf "${RED}  ✗${NC} %s\n" "$*" >&2; }
+step()  { printf "\n${BOLD}${CYAN}─── %s${NC}\n" "$*"; }
 
-curl -sSfL "${URL}" -o "${TMP}/${BINARY}.tar.gz"
-tar -xzf "${TMP}/${BINARY}.tar.gz" -C "${TMP}"
+die() { err "$@"; exit 1; }
 
-if [ -w "${INSTALL_DIR}" ]; then
-    mv "${TMP}/${BINARY}" "${INSTALL_DIR}/${BINARY}"
-else
-    echo "Requires sudo to install to ${INSTALL_DIR}"
-    sudo mv "${TMP}/${BINARY}" "${INSTALL_DIR}/${BINARY}"
+# ── Utilities ─────────────────────────────────────────────────────────────────
+
+has() { command -v "$1" &>/dev/null; }
+
+version_gte() {
+    printf '%s\n%s' "$2" "$1" | sort -V -C
+}
+
+extract_version() {
+    local input="${1:-}"
+    local ver
+    ver="$(echo "${input}" | grep -oE '[0-9]+\.[0-9]+(\.[0-9]+)?' | awk 'NR==1' || true)"
+    echo "${ver:-0.0.0}"
+}
+
+ask_yes_no() {
+    local prompt="$1" default="${2:-y}"
+    if [[ "${YES_MODE}" == true ]]; then
+        return 0
+    fi
+    if [[ "$default" == "y" ]]; then
+        prompt="$prompt [Y/n]"
+    else
+        prompt="$prompt [y/N]"
+    fi
+    local yn
+    printf "  %s " "$prompt" >&2
+    read -r yn < /dev/tty 2>/dev/null || yn="$default"
+    yn="${yn:-$default}"
+    [[ "$yn" =~ ^[Yy]$ ]]
+}
+
+wait_for_enter() {
+    local prompt="${1:-Press Enter to continue...}"
+    if [[ "${YES_MODE}" == true ]]; then
+        return 0
+    fi
+    printf "\n  %s " "$prompt" >&2
+    read -r < /dev/tty 2>/dev/null || true
+}
+
+detect_shell_rc() {
+    case "${SHELL:-/bin/bash}" in
+        */zsh)  echo "${HOME}/.zshrc" ;;
+        */bash) echo "${HOME}/.bashrc" ;;
+        *)      echo "${HOME}/.profile" ;;
+    esac
+}
+
+# ── Interrupt handler ─────────────────────────────────────────────────────────
+
+trap 'printf "\n"; err "Installation cancelled."; exit 130' INT TERM
+
+# ── Platform Detection ────────────────────────────────────────────────────────
+
+detect_platform() {
+    step "Detecting platform"
+
+    OS="$(uname -s | tr '[:upper:]' '[:lower:]')"
+    ARCH="$(uname -m)"
+
+    case "${ARCH}" in
+        x86_64|amd64)  ARCH_NORM="amd64" ;;
+        aarch64|arm64) ARCH_NORM="arm64" ;;
+        *) die "Unsupported architecture: ${ARCH}" ;;
+    esac
+
+    case "${OS}" in
+        darwin) OS_NAME="macOS" ;;
+        linux)  OS_NAME="Linux" ;;
+        *)      die "Unsupported OS: ${OS}" ;;
+    esac
+
+    ok "${OS_NAME} (${ARCH_NORM})"
+}
+
+# ── Dependency: uv ────────────────────────────────────────────────────────────
+
+ensure_uv() {
+    step "Checking uv"
+
+    if has uv; then
+        ok "uv $(extract_version "$(uv --version)") found"
+        return
+    fi
+
+    info "Installing uv..."
+    curl -LsSf https://astral.sh/uv/install.sh | sh 2>/dev/null || {
+        warn "uv installer returned an error"
+    }
+
+    export PATH="${HOME}/.local/bin:${HOME}/.cargo/bin:${PATH}"
+
+    if has uv; then
+        ok "uv $(extract_version "$(uv --version)") installed"
+    else
+        die "Failed to install uv. Install manually: https://docs.astral.sh/uv/"
+    fi
+}
+
+# ── Dependency: Python ────────────────────────────────────────────────────────
+
+ensure_python() {
+    step "Checking Python"
+
+    for cmd in python3.12 python3.11 python3.13 python3.10 python3; do
+        if has "$cmd"; then
+            local ver
+            ver="$(extract_version "$("$cmd" --version 2>&1)")"
+            if version_gte "$ver" "3.10"; then
+                PYTHON_VERSION="$ver"
+                ok "Python ${ver}"
+                return
+            fi
+        fi
+    done
+
+    local uv_py
+    uv_py="$(uv python find 3.12 2>/dev/null || true)"
+    if [[ -n "$uv_py" ]] && [[ -x "$uv_py" ]]; then
+        PYTHON_VERSION="$(extract_version "$("$uv_py" --version 2>&1)")"
+        ok "Python ${PYTHON_VERSION} (managed by uv)"
+        return
+    fi
+
+    info "Installing Python 3.12 via uv..."
+    uv python install 3.12 || die "Failed to install Python via uv."
+    PYTHON_VERSION="3.12"
+    ok "Python 3.12 installed"
+}
+
+# ── Resolve dist artifacts ────────────────────────────────────────────────────
+
+resolve_version() {
+    if [[ -n "${LOCAL_DIR}" ]]; then
+        return
+    fi
+
+    step "Resolving latest version"
+
+    if [[ -n "${VERSION:-}" ]]; then
+        RELEASE_VERSION="${VERSION}"
+        ok "Using specified version: ${RELEASE_VERSION}"
+        return
+    fi
+
+    RELEASE_VERSION=$(curl -sSf "https://api.github.com/repos/${REPO}/releases/latest" \
+        | grep '"tag_name"' | head -1 | sed 's/.*"v\?//' | sed 's/".*//') \
+        || die "Failed to fetch latest release. Use --local <dir> for local installs."
+
+    ok "Latest release: ${RELEASE_VERSION}"
+}
+
+# Find artifact in local dir or construct download URL
+artifact_path() {
+    local name="$1"
+    if [[ -n "${LOCAL_DIR}" ]]; then
+        local match
+        match="$(ls "${LOCAL_DIR}"/${name} 2>/dev/null | head -1 || true)"
+        if [[ -z "${match}" ]]; then
+            die "Artifact not found: ${LOCAL_DIR}/${name}"
+        fi
+        echo "${match}"
+    else
+        echo "https://github.com/${REPO}/releases/download/v${RELEASE_VERSION}/${name}"
+    fi
+}
+
+# Copy from local or download from URL
+fetch_artifact() {
+    local source="$1" dest="$2"
+    if [[ -n "${LOCAL_DIR}" ]]; then
+        cp "${source}" "${dest}"
+    else
+        curl -sSfL "${source}" -o "${dest}" \
+            || die "Failed to download: ${source}"
+    fi
+}
+
+# ── Install: Gateway binary ──────────────────────────────────────────────────
+
+install_gateway() {
+    step "Installing gateway"
+
+    local artifact
+    artifact="$(artifact_path "defenseclaw-gateway-${OS}-${ARCH_NORM}")"
+
+    mkdir -p "${INSTALL_DIR}"
+    fetch_artifact "${artifact}" "${INSTALL_DIR}/defenseclaw-gateway"
+    chmod +x "${INSTALL_DIR}/defenseclaw-gateway"
+
+    if [[ "${OS}" == "darwin" ]]; then
+        codesign -f -s - "${INSTALL_DIR}/defenseclaw-gateway" 2>/dev/null || true
+    fi
+
+    ok "Gateway installed"
+}
+
+# ── Install: Python CLI (from wheel) ─────────────────────────────────────────
+
+install_python_cli() {
+    step "Installing DefenseClaw CLI"
+
+    local whl
+    whl="$(artifact_path "defenseclaw-*.whl")"
+
+    info "Creating Python environment..."
+    uv venv "${DEFENSECLAW_VENV}" --python "${PYTHON_VERSION}" --quiet 2>/dev/null \
+        || uv venv "${DEFENSECLAW_VENV}" --python 3.12 --quiet 2>/dev/null \
+        || uv venv "${DEFENSECLAW_VENV}" --quiet \
+        || die "Failed to create Python virtual environment"
+
+    info "Installing from wheel..."
+    if [[ -n "${LOCAL_DIR}" ]]; then
+        uv pip install --python "${DEFENSECLAW_VENV}/bin/python" --quiet "${whl}" \
+            || die "Failed to install CLI from wheel"
+    else
+        local tmp
+        tmp="$(mktemp -d)"
+        fetch_artifact "${whl}" "${tmp}/defenseclaw.whl"
+        uv pip install --python "${DEFENSECLAW_VENV}/bin/python" --quiet "${tmp}/defenseclaw.whl" \
+            || die "Failed to install CLI from wheel"
+        rm -rf "${tmp}"
+    fi
+
+    mkdir -p "${INSTALL_DIR}"
+    ln -sf "${DEFENSECLAW_VENV}/bin/defenseclaw" "${INSTALL_DIR}/defenseclaw"
+
+    if "${DEFENSECLAW_VENV}/bin/defenseclaw" --help &>/dev/null; then
+        ok "CLI installed"
+    else
+        warn "CLI installed but verification failed — check dependencies"
+    fi
+}
+
+# ── Install: OpenClaw Plugin (from tarball) ───────────────────────────────────
+
+install_plugin() {
+    step "Installing OpenClaw plugin"
+
+    local tarball
+    tarball="$(artifact_path "defenseclaw-plugin-*.tar.gz")"
+
+    local dest="${DEFENSECLAW_HOME}/extensions/defenseclaw"
+    rm -rf "${dest}"
+    mkdir -p "${dest}"
+
+    if [[ -n "${LOCAL_DIR}" ]]; then
+        tar -xzf "${tarball}" -C "${dest}"
+    else
+        local tmp
+        tmp="$(mktemp -d)"
+        fetch_artifact "${tarball}" "${tmp}/plugin.tar.gz"
+        tar -xzf "${tmp}/plugin.tar.gz" -C "${dest}"
+        rm -rf "${tmp}"
+    fi
+
+    ok "Plugin installed"
+}
+
+# ── OpenClaw ──────────────────────────────────────────────────────────────────
+
+npm_global_install() {
+    local pkg="$1"
+    local output
+    if output=$(npm install -g "${pkg}" --loglevel=error 2>&1); then
+        return 0
+    fi
+    if echo "$output" | grep -qiE "permission|EACCES|EPERM"; then
+        info "Requires elevated permissions for global npm install..."
+        sudo npm install -g "${pkg}" --loglevel=error
+    else
+        printf "%s\n" "$output" >&2
+        return 1
+    fi
+}
+
+handle_openclaw() {
+    step "Checking OpenClaw"
+
+    if has openclaw; then
+        local oc_ver
+        oc_ver="$(extract_version "$(openclaw --version 2>&1)")"
+        ok "OpenClaw ${oc_ver} found"
+
+        if version_gte "${oc_ver}" "${OPENCLAW_VERSION}"; then
+            return
+        fi
+
+        warn "Version ${oc_ver} is older than the required ${OPENCLAW_VERSION}"
+        echo ""
+        if ask_yes_no "Update OpenClaw to ${OPENCLAW_VERSION}?"; then
+            info "Updating OpenClaw..."
+            npm_global_install "openclaw@${OPENCLAW_VERSION}" \
+                || die "Failed to update OpenClaw"
+            ok "OpenClaw updated to ${OPENCLAW_VERSION}"
+        else
+            warn "Skipping update — some DefenseClaw features may not work correctly"
+        fi
+        return
+    fi
+
+    warn "OpenClaw is not installed"
+    info "DefenseClaw requires OpenClaw ${OPENCLAW_VERSION} to function."
+    echo ""
+
+    if ! ask_yes_no "Install OpenClaw ${OPENCLAW_VERSION}?"; then
+        echo ""
+        warn "Skipping OpenClaw installation"
+        info "Install later:"
+        printf "    ${CYAN}npm install -g openclaw@${OPENCLAW_VERSION}${NC}\n"
+        printf "    ${CYAN}openclaw onboard --install-daemon${NC}\n"
+        return
+    fi
+
+    if has npm; then
+        info "Installing OpenClaw ${OPENCLAW_VERSION} via npm..."
+        npm_global_install "openclaw@${OPENCLAW_VERSION}" \
+            || die "Failed to install OpenClaw"
+    else
+        info "Installing OpenClaw via official installer..."
+        curl -fsSL https://openclaw.ai/install.sh | bash -s -- --no-onboard \
+            || die "OpenClaw installer failed"
+    fi
+
+    if has openclaw; then
+        ok "OpenClaw ${OPENCLAW_VERSION} installed"
+    else
+        ok "OpenClaw installed (may require shell restart to appear in PATH)"
+    fi
+
+    echo ""
+    info "OpenClaw needs one-time onboarding before first use."
+    printf "\n  ${BOLD}Please open a new terminal${NC} and run:\n\n"
+    printf "    ${CYAN}openclaw onboard --install-daemon${NC}\n\n"
+    info "Complete the onboarding wizard, then come back here."
+
+    wait_for_enter "Press Enter once onboarding is complete..."
+
+    if openclaw --version &>/dev/null; then
+        ok "OpenClaw is ready"
+    else
+        warn "Could not verify OpenClaw — you may need to restart your shell"
+    fi
+}
+
+# ── PATH Configuration ────────────────────────────────────────────────────────
+
+ensure_path() {
+    local dirs_to_add=()
+
+    if ! echo "${PATH}" | tr ':' '\n' | grep -qxF "${INSTALL_DIR}"; then
+        dirs_to_add+=("${INSTALL_DIR}")
+    fi
+
+    if [[ ${#dirs_to_add[@]} -eq 0 ]]; then
+        return
+    fi
+
+    local shell_rc
+    shell_rc="$(detect_shell_rc)"
+
+    step "PATH setup required"
+    info "Add the following to ${shell_rc}:"
+    echo ""
+    for d in "${dirs_to_add[@]}"; do
+        printf "    ${CYAN}export PATH=\"%s:\$PATH\"${NC}\n" "$d"
+    done
+    echo ""
+    info "Then apply with:"
+    printf "    ${CYAN}source %s${NC}\n" "${shell_rc}"
+    echo ""
+}
+
+# ── Success ───────────────────────────────────────────────────────────────────
+
+print_success() {
+    echo ""
+    printf "${BOLD}${GREEN}╔══════════════════════════════════════════════════════════╗${NC}\n"
+    printf "${BOLD}${GREEN}║        DefenseClaw installed successfully!               ║${NC}\n"
+    printf "${BOLD}${GREEN}╚══════════════════════════════════════════════════════════╝${NC}\n"
+    echo ""
+    printf "  Get started:\n\n"
+    printf "    ${CYAN}defenseclaw init${NC}\n"
+    echo ""
+}
+
+# ── Entry Point ───────────────────────────────────────────────────────────────
+
+printf "\n"
+printf "${BOLD}  DefenseClaw Installer${NC}\n"
+printf "  ${DIM}Enterprise Governance for Agentic AI${NC}\n"
+
+YES_MODE=false
+LOCAL_DIR=""
+
+while [[ $# -gt 0 ]]; do
+    case "$1" in
+        --local)
+            [[ $# -lt 2 ]] && die "--local requires a directory argument"
+            LOCAL_DIR="$(cd "$2" && pwd)" || die "Directory not found: $2"
+            shift 2
+            ;;
+        --yes|-y) YES_MODE=true; shift ;;
+        --help|-h)
+            echo ""
+            echo "Usage:"
+            echo "  curl -LsSf <url>/install.sh | bash                # from GitHub release"
+            echo "  ./scripts/install.sh --local ./dist               # from local build"
+            echo "  curl -LsSf <url>/install.sh | bash -s -- --yes    # non-interactive"
+            echo ""
+            echo "Options:"
+            echo "  --local <dir>  Install from a local dist directory"
+            echo "  --yes, -y      Skip all confirmation prompts"
+            echo "  --help, -h     Show this help"
+            echo ""
+            echo "Environment variables:"
+            echo "  DEFENSECLAW_HOME   Install directory (default: ~/.defenseclaw)"
+            echo "  VERSION            Specific release version to install"
+            echo ""
+            echo "Build artifacts locally first:"
+            echo "  make dist          # produces dist/ with all artifacts"
+            echo ""
+            exit 0
+            ;;
+        *) die "Unknown option: $1. Use --help for usage." ;;
+    esac
+done
+export YES_MODE
+
+if [[ -n "${LOCAL_DIR}" ]]; then
+    info "Installing from local directory: ${LOCAL_DIR}"
 fi
 
-chmod +x "${INSTALL_DIR}/${BINARY}"
+detect_platform
+ensure_uv
+ensure_python
+resolve_version
+install_gateway
+install_python_cli
+install_plugin
+handle_openclaw
+ensure_path
+print_success
 
-echo "${BINARY} ${LATEST} installed to ${INSTALL_DIR}/${BINARY}"
-echo ""
-echo "Run 'defenseclaw init' to get started."
+}
+
+main "$@"

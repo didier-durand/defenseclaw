@@ -661,7 +661,7 @@ func (a *APIServer) handleSkillScan(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	ss := scanner.NewSkillScanner(a.scannerCfg.Scanners.SkillScanner)
+	ss := scanner.NewSkillScanner(a.scannerCfg.Scanners.SkillScanner, a.scannerCfg.InspectLLM, a.scannerCfg.CiscoAIDefense)
 
 	ctx, cancel := context.WithTimeout(r.Context(), 120*time.Second)
 	defer cancel()
@@ -710,7 +710,7 @@ func (a *APIServer) handleMCPScan(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	ms := scanner.NewMCPScanner(a.scannerCfg.Scanners.MCPScanner)
+	ms := scanner.NewMCPScanner(a.scannerCfg.Scanners.MCPScanner, a.scannerCfg.InspectLLM, a.scannerCfg.CiscoAIDefense)
 
 	ctx, cancel := context.WithTimeout(r.Context(), 120*time.Second)
 	defer cancel()

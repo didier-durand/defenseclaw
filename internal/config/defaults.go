@@ -72,14 +72,24 @@ func DefaultConfig() *Config {
 			HomeDir:    "~/.openclaw",
 			ConfigFile: "~/.openclaw/openclaw.json",
 		},
+		InspectLLM: InspectLLMConfig{
+			Timeout:    30,
+			MaxRetries: 3,
+		},
+		CiscoAIDefense: CiscoAIDefenseConfig{
+			Endpoint:  "https://us.api.inspect.aidefense.security.cisco.com",
+			APIKeyEnv: "CISCO_AI_DEFENSE_API_KEY",
+			TimeoutMs: 3000,
+		},
 		Scanners: ScannersConfig{
 			SkillScanner: SkillScannerConfig{
-				Binary: "skill-scanner",
+				Binary:  "skill-scanner",
+				Policy:  "permissive",
+				Lenient: true,
 			},
 			MCPScanner: MCPScannerConfig{
-				Binary:     "mcp-scanner",
-				LLMTimeout: 30,
-				LLMMaxRetries: 3,
+				Binary:    "mcp-scanner",
+				Analyzers: "yara",
 			},
 			CodeGuard: filepath.Join(dataDir, "codeguard-rules"),
 		},
@@ -120,15 +130,15 @@ func DefaultConfig() *Config {
 			ReconnectMs:     800,
 			MaxReconnectMs:  15000,
 			ApprovalTimeout: 30,
-			APIPort:         18790,
-		Watcher: GatewayWatcherConfig{
-			Enabled: false,
-			Skill: GatewayWatcherSkillConfig{
-				Enabled:    true,
-				TakeAction: true,
-				Dirs:       []string{},
+			APIPort:         18970,
+			Watcher: GatewayWatcherConfig{
+				Enabled: true,
+				Skill: GatewayWatcherSkillConfig{
+					Enabled:    true,
+					TakeAction: false,
+					Dirs:       []string{},
+				},
 			},
-		},
 		},
 		SkillActions:  DefaultSkillActions(),
 		MCPActions:    DefaultMCPActions(),

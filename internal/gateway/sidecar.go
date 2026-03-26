@@ -281,7 +281,7 @@ func (s *Sidecar) handleAdmissionResult(r watcher.AdmissionResult) {
 
 // runGuardrail starts the LiteLLM proxy child process when guardrail is enabled.
 func (s *Sidecar) runGuardrail(ctx context.Context) error {
-	llm := NewLiteLLMProcess(&s.cfg.Guardrail, s.logger, s.health, s.cfg.Gateway.APIPort, s.cfg.DataDir)
+	llm := NewLiteLLMProcess(&s.cfg.Guardrail, &s.cfg.CiscoAIDefense, s.logger, s.health, s.cfg.Gateway.APIPort, s.cfg.DataDir)
 	return llm.Run(ctx)
 }
 

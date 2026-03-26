@@ -229,7 +229,7 @@ func TestLiteLLMProcessDisabled(t *testing.T) {
 
 	cfg := &config.GuardrailConfig{Enabled: false}
 	health := NewSidecarHealth()
-	llm := NewLiteLLMProcess(cfg, logger, health, 0)
+	llm := NewLiteLLMProcess(cfg, nil, logger, health, 0)
 
 	ctx, cancel := context.WithTimeout(context.Background(), 100*time.Millisecond)
 	defer cancel()
@@ -257,7 +257,7 @@ func TestLiteLLMProcessBinaryNotFound(t *testing.T) {
 		GuardrailDir:  t.TempDir(),
 	}
 	health := NewSidecarHealth()
-	llm := NewLiteLLMProcess(cfg, logger, health, 0)
+	llm := NewLiteLLMProcess(cfg, nil, logger, health, 0)
 
 	// Override PATH so litellm is definitely not found
 	t.Setenv("PATH", t.TempDir())
@@ -297,7 +297,7 @@ func TestLiteLLMProcessMissingConfig(t *testing.T) {
 		GuardrailDir:  tmpDir,
 	}
 	health := NewSidecarHealth()
-	llm := NewLiteLLMProcess(cfg, logger, health, 0)
+	llm := NewLiteLLMProcess(cfg, nil, logger, health, 0)
 
 	ctx, cancel := context.WithTimeout(context.Background(), 100*time.Millisecond)
 	defer cancel()
@@ -3135,13 +3135,13 @@ func TestBuildEnvIncludesScannerMode(t *testing.T) {
 		GuardrailDir: "/test/guardrails",
 		Mode:         "observe",
 		ScannerMode:  "both",
-		CiscoAIDefense: config.CiscoAIDefenseConfig{
-			Endpoint:  "https://test.example.com",
-			APIKeyEnv: "MY_CISCO_KEY",
-			TimeoutMs: 5000,
-		},
 	}
-	llm := &LiteLLMProcess{cfg: cfg, apiPort: 18790}
+	aid := &config.CiscoAIDefenseConfig{
+		Endpoint:  "https://test.example.com",
+		APIKeyEnv: "MY_CISCO_KEY",
+		TimeoutMs: 5000,
+	}
+	llm := &LiteLLMProcess{cfg: cfg, ciscoAIDefense: aid, apiPort: 18790}
 	env := llm.buildEnv()
 
 	checks := map[string]bool{
@@ -3169,12 +3169,12 @@ func TestBuildEnvSkipsCiscoWhenLocal(t *testing.T) {
 		GuardrailDir: "/test/guardrails",
 		Mode:         "observe",
 		ScannerMode:  "local",
-		CiscoAIDefense: config.CiscoAIDefenseConfig{
-			Endpoint:  "https://test.example.com",
-			APIKeyEnv: "MY_CISCO_KEY",
-		},
 	}
-	llm := &LiteLLMProcess{cfg: cfg, apiPort: 18790}
+	aid := &config.CiscoAIDefenseConfig{
+		Endpoint:  "https://test.example.com",
+		APIKeyEnv: "MY_CISCO_KEY",
+	}
+	llm := &LiteLLMProcess{cfg: cfg, ciscoAIDefense: aid, apiPort: 18790}
 	env := llm.buildEnv()
 
 	for _, e := range env {

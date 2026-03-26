@@ -15,14 +15,16 @@ import (
 )
 
 type SkillScanner struct {
-	Config config.SkillScannerConfig
+	Config         config.SkillScannerConfig
+	InspectLLM     config.InspectLLMConfig
+	CiscoAIDefense config.CiscoAIDefenseConfig
 }
 
-func NewSkillScanner(cfg config.SkillScannerConfig) *SkillScanner {
+func NewSkillScanner(cfg config.SkillScannerConfig, llm config.InspectLLMConfig, aid config.CiscoAIDefenseConfig) *SkillScanner {
 	if cfg.Binary == "" {
 		cfg.Binary = "skill-scanner"
 	}
-	return &SkillScanner{Config: cfg}
+	return &SkillScanner{Config: cfg, InspectLLM: llm, CiscoAIDefense: aid}
 }
 
 func (s *SkillScanner) Name() string              { return "skill-scanner" }
@@ -50,8 +52,8 @@ func (s *SkillScanner) buildArgs(target string) []string {
 	if s.Config.UseAIDefense {
 		args = append(args, "--use-aidefense")
 	}
-	if s.Config.LLMProvider != "" {
-		args = append(args, "--llm-provider", s.Config.LLMProvider)
+	if s.InspectLLM.Provider != "" {
+		args = append(args, "--llm-provider", s.InspectLLM.Provider)
 	}
 	if s.Config.LLMConsensus > 0 {
 		args = append(args, "--llm-consensus-runs", strconv.Itoa(s.Config.LLMConsensus))
@@ -77,10 +79,10 @@ func (s *SkillScanner) scanEnv() []string {
 		envVar string
 		value  string
 	}{
-		{"SKILL_SCANNER_LLM_API_KEY", s.Config.LLMAPIKey},
-		{"SKILL_SCANNER_LLM_MODEL", s.Config.LLMModel},
+		{"SKILL_SCANNER_LLM_API_KEY", s.InspectLLM.ResolvedAPIKey()},
+		{"SKILL_SCANNER_LLM_MODEL", s.InspectLLM.Model},
 		{"VIRUSTOTAL_API_KEY", s.Config.VirusTotalKey},
-		{"AI_DEFENSE_API_KEY", s.Config.AIDefenseKey},
+		{"AI_DEFENSE_API_KEY", s.CiscoAIDefense.ResolvedAPIKey()},
 	}
 
 	existing := make(map[string]bool)

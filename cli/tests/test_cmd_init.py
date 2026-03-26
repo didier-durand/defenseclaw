@@ -40,8 +40,8 @@ class TestInitCommand(unittest.TestCase):
         result = self.runner.invoke(init_cmd, ["--skip-install"], obj=app)
 
         self.assertEqual(result.exit_code, 0, result.output + (result.stderr or ""))
-        self.assertIn("Environment:", result.output)
-        self.assertIn("Directories: created", result.output)
+        self.assertIn("Platform:", result.output)
+        self.assertIn("Directories:", result.output)
         self.assertIn("Config:", result.output)
         self.assertIn("Audit DB:", result.output)
 
@@ -72,21 +72,6 @@ class TestInitCommand(unittest.TestCase):
         self.assertEqual(len(init_events), 1, f"expected exactly one 'init' event, got actions: {[e.action for e in events]}")
         self.assertEqual(init_events[0].action, "init")
         store.close()
-
-    @patch("defenseclaw.commands.cmd_init.shutil.which", return_value=None)
-    @patch("defenseclaw.commands.cmd_init._install_guardrail")
-    @patch("defenseclaw.commands.cmd_init._install_scanners")
-    @patch("defenseclaw.config.detect_environment", return_value="macos")
-    @patch("defenseclaw.config.default_data_path")
-    def test_init_shows_openshell_macos_message(self, mock_path, _mock_env, mock_scanners, _mock_guardrail, _mock_which):
-        from pathlib import Path
-        mock_path.return_value = Path(self.tmp_dir)
-
-        app = AppContext()
-        result = self.runner.invoke(init_cmd, ["--skip-install"], obj=app)
-        self.assertEqual(result.exit_code, 0, result.output + (result.stderr or ""))
-        self.assertIn("not available on macOS", result.output)
-
 
 class TestInitPreservesExistingConfig(unittest.TestCase):
     """Regression tests for P5 fix: init must not overwrite existing config."""
@@ -208,6 +193,259 @@ class TestInitDoesNotCreateExternalDirs(unittest.TestCase):
         self.assertTrue(os.path.isdir(plugins))
 
 
+class TestInitShowsScannerDefaults(unittest.TestCase):
+    """Verify that init displays scanner defaults to the user."""
+
+    def setUp(self):
+        self.tmp_dir = tempfile.mkdtemp(prefix="dclaw-init-scandef-")
+        self.runner = CliRunner()
+
+    def tearDown(self):
+        shutil.rmtree(self.tmp_dir, ignore_errors=True)
+
+    @patch("defenseclaw.commands.cmd_init.shutil.which", return_value=None)
+    @patch("defenseclaw.commands.cmd_init._install_guardrail")
+    @patch("defenseclaw.commands.cmd_init._install_scanners")
+    @patch("defenseclaw.config.detect_environment", return_value="macos")
+    @patch("defenseclaw.config.default_data_path")
+    def test_init_displays_skill_scanner_defaults(self, mock_path, _mock_env, _mock_scanners, _mock_guardrail, _mock_which):
+        from pathlib import Path
+        mock_path.return_value = Path(self.tmp_dir)
+
+        app = AppContext()
+        result = self.runner.invoke(init_cmd, ["--skip-install"], obj=app)
+        self.assertEqual(result.exit_code, 0, result.output)
+        self.assertIn("skill-scanner:", result.output)
+        self.assertIn("policy=permissive", result.output)
+        self.assertIn("lenient=True", result.output)
+
+    @patch("defenseclaw.commands.cmd_init.shutil.which", return_value=None)
+    @patch("defenseclaw.commands.cmd_init._install_guardrail")
+    @patch("defenseclaw.commands.cmd_init._install_scanners")
+    @patch("defenseclaw.config.detect_environment", return_value="macos")
+    @patch("defenseclaw.config.default_data_path")
+    def test_init_displays_mcp_scanner_defaults(self, mock_path, _mock_env, _mock_scanners, _mock_guardrail, _mock_which):
+        from pathlib import Path
+        mock_path.return_value = Path(self.tmp_dir)
+
+        app = AppContext()
+        result = self.runner.invoke(init_cmd, ["--skip-install"], obj=app)
+        self.assertEqual(result.exit_code, 0, result.output)
+        self.assertIn("mcp-scanner:", result.output)
+        self.assertIn("analyzers=yara", result.output)
+
+    @patch("defenseclaw.commands.cmd_init.shutil.which", return_value=None)
+    @patch("defenseclaw.commands.cmd_init._install_guardrail")
+    @patch("defenseclaw.commands.cmd_init._install_scanners")
+    @patch("defenseclaw.config.detect_environment", return_value="macos")
+    @patch("defenseclaw.config.default_data_path")
+    def test_init_displays_setup_hint(self, mock_path, _mock_env, _mock_scanners, _mock_guardrail, _mock_which):
+        from pathlib import Path
+        mock_path.return_value = Path(self.tmp_dir)
+
+        app = AppContext()
+        result = self.runner.invoke(init_cmd, ["--skip-install"], obj=app)
+        self.assertEqual(result.exit_code, 0, result.output)
+        self.assertIn("defenseclaw setup", result.output)
+
+    @patch("defenseclaw.commands.cmd_init.shutil.which", return_value=None)
+    @patch("defenseclaw.commands.cmd_init._install_guardrail")
+    @patch("defenseclaw.commands.cmd_init._install_scanners")
+    @patch("defenseclaw.config.detect_environment", return_value="macos")
+    @patch("defenseclaw.config.default_data_path")
+    def test_init_saves_scanner_defaults_to_config(self, mock_path, _mock_env, _mock_scanners, _mock_guardrail, _mock_which):
+        from pathlib import Path
+        import yaml
+
+        mock_path.return_value = Path(self.tmp_dir)
+
+        app = AppContext()
+        result = self.runner.invoke(init_cmd, ["--skip-install"], obj=app)
+        self.assertEqual(result.exit_code, 0, result.output)
+
+        config_file = os.path.join(self.tmp_dir, "config.yaml")
+        with open(config_file) as f:
+            raw = yaml.safe_load(f)
+
+        sc = raw.get("scanners", {}).get("skill_scanner", {})
+        self.assertEqual(sc.get("policy"), "permissive")
+        self.assertTrue(sc.get("lenient"))
+        self.assertFalse(sc.get("use_llm"))
+
+        mc = raw.get("scanners", {}).get("mcp_scanner", {})
+        self.assertEqual(mc.get("analyzers"), "yara")
+        self.assertFalse(mc.get("scan_prompts"))
+
+
+class TestInitShowsGatewayDefaults(unittest.TestCase):
+    """Verify that init displays gateway defaults."""
+
+    def setUp(self):
+        self.tmp_dir = tempfile.mkdtemp(prefix="dclaw-init-gwdef-")
+        self.runner = CliRunner()
+
+    def tearDown(self):
+        shutil.rmtree(self.tmp_dir, ignore_errors=True)
+
+    @patch("defenseclaw.commands.cmd_init.shutil.which", return_value=None)
+    @patch("defenseclaw.commands.cmd_init._install_guardrail")
+    @patch("defenseclaw.commands.cmd_init._install_scanners")
+    @patch("defenseclaw.config.detect_environment", return_value="macos")
+    @patch("defenseclaw.config.default_data_path")
+    def test_init_displays_gateway_section(self, mock_path, _mock_env, _mock_scanners, _mock_guardrail, _mock_which):
+        from pathlib import Path
+        mock_path.return_value = Path(self.tmp_dir)
+
+        app = AppContext()
+        result = self.runner.invoke(init_cmd, ["--skip-install"], obj=app)
+        self.assertEqual(result.exit_code, 0, result.output)
+        self.assertIn("Gateway", result.output)
+        self.assertIn("OpenClaw:", result.output)
+        self.assertIn("127.0.0.1:18789", result.output)
+        self.assertIn("API port:", result.output)
+        self.assertIn("18970", result.output)
+
+    @patch("defenseclaw.commands.cmd_init.shutil.which", return_value=None)
+    @patch("defenseclaw.commands.cmd_init._install_guardrail")
+    @patch("defenseclaw.commands.cmd_init._install_scanners")
+    @patch("defenseclaw.config.detect_environment", return_value="macos")
+    @patch("defenseclaw.config.default_data_path")
+    def test_init_displays_watcher_defaults(self, mock_path, _mock_env, _mock_scanners, _mock_guardrail, _mock_which):
+        from pathlib import Path
+        mock_path.return_value = Path(self.tmp_dir)
+
+        app = AppContext()
+        result = self.runner.invoke(init_cmd, ["--skip-install"], obj=app)
+        self.assertEqual(result.exit_code, 0, result.output)
+        self.assertIn("Watcher:", result.output)
+        self.assertIn("enabled=True", result.output)
+        self.assertIn("take_action=False", result.output)
+
+    @patch("defenseclaw.commands.cmd_init.shutil.which", return_value=None)
+    @patch("defenseclaw.commands.cmd_init._install_guardrail")
+    @patch("defenseclaw.commands.cmd_init._install_scanners")
+    @patch("defenseclaw.config.detect_environment", return_value="macos")
+    @patch("defenseclaw.config.default_data_path")
+    def test_init_saves_gateway_defaults_to_config(self, mock_path, _mock_env, _mock_scanners, _mock_guardrail, _mock_which):
+        from pathlib import Path
+        import yaml
+
+        mock_path.return_value = Path(self.tmp_dir)
+
+        app = AppContext()
+        result = self.runner.invoke(init_cmd, ["--skip-install"], obj=app)
+        self.assertEqual(result.exit_code, 0, result.output)
+
+        config_file = os.path.join(self.tmp_dir, "config.yaml")
+        with open(config_file) as f:
+            raw = yaml.safe_load(f)
+
+        gw = raw.get("gateway", {})
+        self.assertEqual(gw.get("host"), "127.0.0.1")
+        self.assertEqual(gw.get("port"), 18789)
+        self.assertEqual(gw.get("api_port"), 18970)
+        self.assertTrue(gw.get("watcher", {}).get("enabled"))
+        self.assertFalse(gw.get("watcher", {}).get("skill", {}).get("take_action"))
+
+    @patch("defenseclaw.commands.cmd_init._resolve_openclaw_gateway",
+           return_value={"host": "127.0.0.1", "port": 18789, "token": ""})
+    @patch("defenseclaw.commands.cmd_init.shutil.which", return_value=None)
+    @patch("defenseclaw.commands.cmd_init._install_guardrail")
+    @patch("defenseclaw.commands.cmd_init._install_scanners")
+    @patch("defenseclaw.config.detect_environment", return_value="macos")
+    @patch("defenseclaw.config.default_data_path")
+    def test_init_no_token_shows_local(self, mock_path, _mock_env, _mock_scanners, _mock_guardrail, _mock_which, _mock_gw):
+        from pathlib import Path
+        mock_path.return_value = Path(self.tmp_dir)
+
+        app = AppContext()
+        result = self.runner.invoke(init_cmd, ["--skip-install"], obj=app)
+        self.assertEqual(result.exit_code, 0, result.output)
+        self.assertIn("none (local)", result.output)
+
+
+class TestResolveOpenclawGateway(unittest.TestCase):
+    """Tests for _resolve_openclaw_gateway helper."""
+
+    def test_no_openclaw_json_returns_defaults(self):
+        from defenseclaw.commands.cmd_init import _resolve_openclaw_gateway
+        result = _resolve_openclaw_gateway("/tmp/nonexistent/openclaw.json")
+        self.assertEqual(result["host"], "127.0.0.1")
+        self.assertEqual(result["port"], 18789)
+        self.assertEqual(result["token"], "")
+
+    def test_local_mode_reads_port_and_token(self):
+        import json
+        from defenseclaw.commands.cmd_init import _resolve_openclaw_gateway
+
+        with tempfile.TemporaryDirectory() as tmpdir:
+            oc_data = {
+                "gateway": {
+                    "model": "local",
+                    "port": 19000,
+                    "auth": {"token": "test-token-abc"},
+                }
+            }
+            oc_path = os.path.join(tmpdir, "openclaw.json")
+            with open(oc_path, "w") as f:
+                json.dump(oc_data, f)
+
+            result = _resolve_openclaw_gateway(oc_path)
+            self.assertEqual(result["host"], "127.0.0.1")
+            self.assertEqual(result["port"], 19000)
+            self.assertEqual(result["token"], "test-token-abc")
+
+    def test_non_local_mode_reads_host(self):
+        import json
+        from defenseclaw.commands.cmd_init import _resolve_openclaw_gateway
+
+        with tempfile.TemporaryDirectory() as tmpdir:
+            oc_data = {
+                "gateway": {
+                    "model": "remote",
+                    "host": "10.0.0.5",
+                    "port": 20000,
+                    "auth": {"token": "remote-token"},
+                }
+            }
+            oc_path = os.path.join(tmpdir, "openclaw.json")
+            with open(oc_path, "w") as f:
+                json.dump(oc_data, f)
+
+            result = _resolve_openclaw_gateway(oc_path)
+            self.assertEqual(result["host"], "10.0.0.5")
+            self.assertEqual(result["port"], 20000)
+            self.assertEqual(result["token"], "remote-token")
+
+    def test_missing_gateway_block(self):
+        import json
+        from defenseclaw.commands.cmd_init import _resolve_openclaw_gateway
+
+        with tempfile.TemporaryDirectory() as tmpdir:
+            oc_data = {"agents": {"defaults": {}}}
+            oc_path = os.path.join(tmpdir, "openclaw.json")
+            with open(oc_path, "w") as f:
+                json.dump(oc_data, f)
+
+            result = _resolve_openclaw_gateway(oc_path)
+            self.assertEqual(result["host"], "127.0.0.1")
+            self.assertEqual(result["port"], 18789)
+            self.assertEqual(result["token"], "")
+
+    def test_no_auth_token(self):
+        import json
+        from defenseclaw.commands.cmd_init import _resolve_openclaw_gateway
+
+        with tempfile.TemporaryDirectory() as tmpdir:
+            oc_data = {"gateway": {"model": "local", "port": 18789}}
+            oc_path = os.path.join(tmpdir, "openclaw.json")
+            with open(oc_path, "w") as f:
+                json.dump(oc_data, f)
+
+            result = _resolve_openclaw_gateway(oc_path)
+            self.assertEqual(result["token"], "")
+
+
 class TestInstallScanners(unittest.TestCase):
     @patch("defenseclaw.commands.cmd_init._verify_scanner_sdk")
     def test_install_scanners_verifies_sdks(self, mock_verify):
@@ -232,6 +470,269 @@ class TestInstallScanners(unittest.TestCase):
         # skip=True should print skip message without calling install
         _install_scanners(cfg, logger, skip=True)
         logger.log_action.assert_not_called()
+
+
+class TestInitEnableGuardrail(unittest.TestCase):
+    """Tests for the --enable-guardrail flag during init."""
+
+    def setUp(self):
+        self.tmp_dir = tempfile.mkdtemp(prefix="dclaw-init-guardrail-")
+        self.runner = CliRunner()
+
+    def tearDown(self):
+        shutil.rmtree(self.tmp_dir, ignore_errors=True)
+
+    @patch("defenseclaw.commands.cmd_init.shutil.which", return_value=None)
+    @patch("defenseclaw.commands.cmd_init._install_scanners")
+    @patch("defenseclaw.config.detect_environment", return_value="macos")
+    @patch("defenseclaw.config.default_data_path")
+    def test_enable_guardrail_flag_appears_in_help(self, mock_path, _mock_env, _mock_scanners, _mock_which):
+        result = self.runner.invoke(init_cmd, ["--help"])
+        self.assertEqual(result.exit_code, 0)
+        self.assertIn("--enable-guardrail", result.output)
+
+    @patch("defenseclaw.commands.cmd_init.shutil.which", return_value=None)
+    @patch("defenseclaw.commands.cmd_init._install_guardrail")
+    @patch("defenseclaw.commands.cmd_init._install_scanners")
+    @patch("defenseclaw.config.detect_environment", return_value="macos")
+    @patch("defenseclaw.config.default_data_path")
+    def test_init_without_flag_shows_guardrail_hint(self, mock_path, _mock_env, _mock_scanners, _mock_guardrail, _mock_which):
+        from pathlib import Path
+        mock_path.return_value = Path(self.tmp_dir)
+
+        app = AppContext()
+        result = self.runner.invoke(init_cmd, ["--skip-install"], obj=app)
+        self.assertEqual(result.exit_code, 0, result.output)
+        self.assertIn("defenseclaw setup guardrail", result.output)
+        self.assertIn("enable llm inspection", result.output.lower())
+
+    @patch("defenseclaw.commands.cmd_init._start_gateway")
+    @patch("defenseclaw.commands.cmd_init._install_codeguard_skill")
+    @patch("defenseclaw.commands.cmd_init._install_guardrail")
+    @patch("defenseclaw.commands.cmd_init.shutil.which", return_value=None)
+    @patch("defenseclaw.commands.cmd_init._install_scanners")
+    @patch("defenseclaw.commands.cmd_setup._interactive_guardrail_setup")
+    @patch("defenseclaw.commands.cmd_setup.execute_guardrail_setup", return_value=(True, []))
+    @patch("defenseclaw.config.detect_environment", return_value="macos")
+    @patch("defenseclaw.config.default_data_path")
+    def test_enable_guardrail_calls_interactive_setup(
+        self, mock_path, _mock_env, mock_exec, mock_interactive,
+        _mock_scanners, _mock_which, _mock_guardrail, _mock_codeguard, _mock_start_gw
+    ):
+        from pathlib import Path
+        mock_path.return_value = Path(self.tmp_dir)
+
+        def fake_interactive(app, gc):
+            gc.enabled = True
+            gc.mode = "observe"
+            gc.model = "anthropic/test-model"
+            gc.model_name = "test-model"
+            gc.api_key_env = "ANTHROPIC_API_KEY"
+
+        mock_interactive.side_effect = fake_interactive
+
+        app = AppContext()
+        result = self.runner.invoke(init_cmd, ["--skip-install", "--enable-guardrail"], obj=app)
+        self.assertEqual(result.exit_code, 0, result.output)
+        mock_interactive.assert_called_once()
+        mock_exec.assert_called_once()
+
+    @patch("defenseclaw.commands.cmd_init._start_gateway")
+    @patch("defenseclaw.commands.cmd_init._install_codeguard_skill")
+    @patch("defenseclaw.commands.cmd_init.shutil.which", return_value=None)
+    @patch("defenseclaw.commands.cmd_init._install_scanners")
+    @patch("defenseclaw.commands.cmd_setup._interactive_guardrail_setup")
+    @patch("defenseclaw.config.detect_environment", return_value="macos")
+    @patch("defenseclaw.config.default_data_path")
+    def test_enable_guardrail_declined_shows_hint(
+        self, mock_path, _mock_env, mock_interactive,
+        _mock_scanners, _mock_which, _mock_codeguard, _mock_start_gw
+    ):
+        from pathlib import Path
+        mock_path.return_value = Path(self.tmp_dir)
+
+        def fake_decline(app, gc):
+            gc.enabled = False
+
+        mock_interactive.side_effect = fake_decline
+
+        app = AppContext()
+        result = self.runner.invoke(init_cmd, ["--skip-install", "--enable-guardrail"], obj=app)
+        self.assertEqual(result.exit_code, 0, result.output)
+        self.assertIn("Guardrail not enabled", result.output)
+        self.assertIn("defenseclaw setup guardrail", result.output)
+
+    @patch("defenseclaw.commands.cmd_init._start_gateway")
+    @patch("defenseclaw.commands.cmd_init._install_codeguard_skill")
+    @patch("defenseclaw.commands.cmd_init._install_guardrail")
+    @patch("defenseclaw.commands.cmd_init.shutil.which", return_value=None)
+    @patch("defenseclaw.commands.cmd_init._install_scanners")
+    @patch("defenseclaw.commands.cmd_setup._interactive_guardrail_setup")
+    @patch("defenseclaw.commands.cmd_setup.execute_guardrail_setup", return_value=(True, ["test warning"]))
+    @patch("defenseclaw.config.detect_environment", return_value="macos")
+    @patch("defenseclaw.config.default_data_path")
+    def test_enable_guardrail_shows_warnings(
+        self, mock_path, _mock_env, mock_exec, mock_interactive,
+        _mock_scanners, _mock_which, _mock_guardrail, _mock_codeguard, _mock_start_gw
+    ):
+        from pathlib import Path
+        mock_path.return_value = Path(self.tmp_dir)
+
+        def fake_interactive(app, gc):
+            gc.enabled = True
+            gc.mode = "observe"
+            gc.model = "anthropic/test-model"
+            gc.model_name = "test-model"
+
+        mock_interactive.side_effect = fake_interactive
+
+        app = AppContext()
+        result = self.runner.invoke(init_cmd, ["--skip-install", "--enable-guardrail"], obj=app)
+        self.assertEqual(result.exit_code, 0, result.output)
+        self.assertIn("test warning", result.output)
+
+
+class TestInitStartsGateway(unittest.TestCase):
+    """Tests for the sidecar start during init."""
+
+    def setUp(self):
+        self.tmp_dir = tempfile.mkdtemp(prefix="dclaw-init-sidecar-")
+        self.runner = CliRunner()
+
+    def tearDown(self):
+        shutil.rmtree(self.tmp_dir, ignore_errors=True)
+
+    @patch("defenseclaw.commands.cmd_init._install_guardrail")
+    @patch("defenseclaw.commands.cmd_init._install_scanners")
+    @patch("defenseclaw.config.detect_environment", return_value="macos")
+    @patch("defenseclaw.config.default_data_path")
+    def test_init_shows_sidecar_section(self, mock_path, _mock_env, _mock_scanners, _mock_guardrail):
+        from pathlib import Path
+        mock_path.return_value = Path(self.tmp_dir)
+
+        with patch("defenseclaw.commands.cmd_init.shutil.which", return_value=None):
+            app = AppContext()
+            result = self.runner.invoke(init_cmd, ["--skip-install"], obj=app)
+            self.assertEqual(result.exit_code, 0, result.output)
+            self.assertIn("Sidecar", result.output)
+
+    @patch("defenseclaw.commands.cmd_init._install_guardrail")
+    @patch("defenseclaw.commands.cmd_init._install_scanners")
+    @patch("defenseclaw.config.detect_environment", return_value="macos")
+    @patch("defenseclaw.config.default_data_path")
+    def test_sidecar_binary_not_found(self, mock_path, _mock_env, _mock_scanners, _mock_guardrail):
+        from pathlib import Path
+        mock_path.return_value = Path(self.tmp_dir)
+
+        with patch("defenseclaw.commands.cmd_init.shutil.which", return_value=None):
+            app = AppContext()
+            result = self.runner.invoke(init_cmd, ["--skip-install"], obj=app)
+            self.assertEqual(result.exit_code, 0, result.output)
+            self.assertIn("not found", result.output)
+            self.assertIn("make gateway-install", result.output)
+
+    def test_start_gateway_binary_missing(self):
+        from defenseclaw.commands.cmd_init import _start_gateway
+        from defenseclaw.config import default_config
+
+        cfg = default_config()
+        cfg.data_dir = self.tmp_dir
+        logger = MagicMock()
+
+        with patch("defenseclaw.commands.cmd_init.shutil.which", return_value=None):
+            _start_gateway(cfg, logger)
+            logger.log_action.assert_not_called()
+
+    def test_start_gateway_already_running(self):
+        from defenseclaw.commands.cmd_init import _start_gateway
+        from defenseclaw.config import default_config
+
+        cfg = default_config()
+        cfg.data_dir = self.tmp_dir
+        logger = MagicMock()
+
+        pid_file = os.path.join(self.tmp_dir, "gateway.pid")
+        with open(pid_file, "w") as f:
+            f.write(str(os.getpid()))
+
+        with patch("defenseclaw.commands.cmd_init.shutil.which", return_value="/usr/bin/defenseclaw-gateway"):
+            _start_gateway(cfg, logger)
+            logger.log_action.assert_not_called()
+
+    def test_start_gateway_starts_successfully(self):
+        from defenseclaw.commands.cmd_init import _start_gateway
+        from defenseclaw.config import default_config
+
+        cfg = default_config()
+        cfg.data_dir = self.tmp_dir
+        logger = MagicMock()
+
+        mock_result = MagicMock()
+        mock_result.returncode = 0
+        mock_result.stderr = ""
+        mock_result.stdout = ""
+
+        with patch("defenseclaw.commands.cmd_init.shutil.which", return_value="/usr/bin/defenseclaw-gateway"), \
+             patch("defenseclaw.commands.cmd_init.subprocess.run", return_value=mock_result), \
+             patch("defenseclaw.commands.cmd_init._check_sidecar_health"):
+            _start_gateway(cfg, logger)
+            logger.log_action.assert_called_once()
+            self.assertIn("init-sidecar", logger.log_action.call_args[0])
+
+    def test_start_gateway_fails(self):
+        from defenseclaw.commands.cmd_init import _start_gateway
+        from defenseclaw.config import default_config
+
+        cfg = default_config()
+        cfg.data_dir = self.tmp_dir
+        logger = MagicMock()
+
+        mock_result = MagicMock()
+        mock_result.returncode = 1
+        mock_result.stderr = "connection refused"
+        mock_result.stdout = ""
+
+        with patch("defenseclaw.commands.cmd_init.shutil.which", return_value="/usr/bin/defenseclaw-gateway"), \
+             patch("defenseclaw.commands.cmd_init.subprocess.run", return_value=mock_result), \
+             patch("defenseclaw.commands.cmd_init._check_sidecar_health"):
+            _start_gateway(cfg, logger)
+            logger.log_action.assert_not_called()
+
+
+class TestIsSidecarRunning(unittest.TestCase):
+    """Tests for the _is_sidecar_running helper."""
+
+    def setUp(self):
+        self.tmp_dir = tempfile.mkdtemp(prefix="dclaw-sidecar-pid-")
+
+    def tearDown(self):
+        shutil.rmtree(self.tmp_dir, ignore_errors=True)
+
+    def test_no_pid_file(self):
+        from defenseclaw.commands.cmd_init import _is_sidecar_running
+        self.assertFalse(_is_sidecar_running("/tmp/nonexistent/gateway.pid"))
+
+    def test_valid_pid(self):
+        from defenseclaw.commands.cmd_init import _is_sidecar_running
+        pid_file = os.path.join(self.tmp_dir, "gateway.pid")
+        with open(pid_file, "w") as f:
+            f.write(str(os.getpid()))
+        self.assertTrue(_is_sidecar_running(pid_file))
+
+    def test_stale_pid(self):
+        from defenseclaw.commands.cmd_init import _is_sidecar_running
+        pid_file = os.path.join(self.tmp_dir, "gateway.pid")
+        with open(pid_file, "w") as f:
+            f.write("999999999")
+        self.assertFalse(_is_sidecar_running(pid_file))
+
+    def test_json_pid_format(self):
+        import json
+        from defenseclaw.commands.cmd_init import _read_pid
+        pid_file = os.path.join(self.tmp_dir, "gateway.pid")
+        with open(pid_file, "w") as f:
+            json.dump({"pid": os.getpid()}, f)
+        self.assertEqual(_read_pid(pid_file), os.getpid())
 
 
 if __name__ == "__main__":

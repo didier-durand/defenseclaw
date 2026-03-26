@@ -1070,26 +1070,51 @@ class TestAdmissionVerdictClean(_StoreWithPolicyMixin, unittest.TestCase):
 
 
 class TestAdmissionVerdictRejected(_StoreWithPolicyMixin, unittest.TestCase):
-    """HIGH/CRITICAL findings trigger rejection with default config."""
+    """CRITICAL/HIGH produce warnings with permissive defaults,
+    but custom strict actions can escalate them to rejected."""
 
-    def test_rejected_critical(self):
+    def test_critical_warning_with_permissive_defaults(self):
         pe = self._pe()
         scan = {"finding_count": 1, "max_severity": "CRITICAL", "target": "/x"}
         verdict, detail = _admission_verdict(
             pe, "skill", "dangerous", scan, None, self.skill_actions,
         )
-        self.assertEqual(verdict, "rejected")
+        self.assertEqual(verdict, "warning")
         self.assertIn("1 findings", detail)
         self.assertIn("CRITICAL", detail)
 
-    def test_rejected_high(self):
+    def test_high_warning_with_permissive_defaults(self):
         pe = self._pe()
         scan = {"finding_count": 5, "max_severity": "HIGH", "target": "/x"}
         verdict, detail = _admission_verdict(
             pe, "plugin", "risky-plugin", scan, None, self.skill_actions,
         )
-        self.assertEqual(verdict, "rejected")
+        self.assertEqual(verdict, "warning")
         self.assertIn("5 findings", detail)
+        self.assertIn("HIGH", detail)
+
+    def test_strict_actions_reject_critical(self):
+        pe = self._pe()
+        strict = SkillActionsConfig(
+            critical=SeverityAction(file="quarantine", runtime="disable", install="block"),
+        )
+        scan = {"finding_count": 1, "max_severity": "CRITICAL", "target": "/x"}
+        verdict, detail = _admission_verdict(
+            pe, "skill", "dangerous", scan, None, strict,
+        )
+        self.assertEqual(verdict, "rejected")
+        self.assertIn("CRITICAL", detail)
+
+    def test_strict_actions_reject_high(self):
+        pe = self._pe()
+        strict = SkillActionsConfig(
+            high=SeverityAction(file="quarantine", runtime="disable", install="block"),
+        )
+        scan = {"finding_count": 5, "max_severity": "HIGH", "target": "/x"}
+        verdict, detail = _admission_verdict(
+            pe, "plugin", "risky-plugin", scan, None, strict,
+        )
+        self.assertEqual(verdict, "rejected")
         self.assertIn("HIGH", detail)
 
 
@@ -1439,7 +1464,7 @@ class TestEnrichWithPolicy(_StoreWithPolicyMixin, unittest.TestCase):
         self.assertEqual(by_id["discord"]["policy_verdict"], "blocked")
         self.assertEqual(by_id["weather"]["policy_verdict"], "clean")
         self.assertEqual(by_id["new-skill"]["policy_verdict"], "unscanned")
-        self.assertEqual(by_id["peekaboo"]["policy_verdict"], "rejected")
+        self.assertEqual(by_id["peekaboo"]["policy_verdict"], "warning")
 
     def test_scan_data_attached_to_items(self):
         self._seed_store()
@@ -1490,7 +1515,8 @@ class TestEnrichWithPolicy(_StoreWithPolicyMixin, unittest.TestCase):
         self.assertEqual(ps["blocked"], 1)
         self.assertEqual(ps["allowed"], 1)
         self.assertEqual(ps["clean"], 1)
-        self.assertEqual(ps["rejected"], 1)
+        self.assertEqual(ps.get("rejected", 0), 0)
+        self.assertEqual(ps["warning"], 1)
         self.assertEqual(ps["unscanned"], 1)
 
         pp = inv["summary"]["policy_plugins"]

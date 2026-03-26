@@ -23,23 +23,25 @@ type ClawConfig struct {
 }
 
 type Config struct {
-	DataDir       string             `mapstructure:"data_dir"       yaml:"data_dir"`
-	AuditDB       string             `mapstructure:"audit_db"       yaml:"audit_db"`
-	QuarantineDir string             `mapstructure:"quarantine_dir" yaml:"quarantine_dir"`
-	PluginDir     string             `mapstructure:"plugin_dir"     yaml:"plugin_dir"`
-	PolicyDir     string             `mapstructure:"policy_dir"     yaml:"policy_dir"`
-	Environment   string             `mapstructure:"environment"    yaml:"environment"`
-	Claw          ClawConfig         `mapstructure:"claw"           yaml:"claw"`
-	Scanners      ScannersConfig     `mapstructure:"scanners"       yaml:"scanners"`
-	OpenShell     OpenShellConfig    `mapstructure:"openshell"      yaml:"openshell"`
-	Watch         WatchConfig        `mapstructure:"watch"          yaml:"watch"`
-	Firewall      FirewallConfig     `mapstructure:"firewall"       yaml:"firewall"`
-	Guardrail     GuardrailConfig    `mapstructure:"guardrail"      yaml:"guardrail"`
-	Splunk        SplunkConfig       `mapstructure:"splunk"         yaml:"splunk"`
-	Gateway       GatewayConfig      `mapstructure:"gateway"        yaml:"gateway"`
-	SkillActions  SkillActionsConfig `mapstructure:"skill_actions"  yaml:"skill_actions"`
-	MCPActions    MCPActionsConfig   `mapstructure:"mcp_actions"    yaml:"mcp_actions"`
-	OTel          OTelConfig         `mapstructure:"otel"           yaml:"otel"`
+	DataDir        string                `mapstructure:"data_dir"         yaml:"data_dir"`
+	AuditDB        string                `mapstructure:"audit_db"         yaml:"audit_db"`
+	QuarantineDir  string                `mapstructure:"quarantine_dir"   yaml:"quarantine_dir"`
+	PluginDir      string                `mapstructure:"plugin_dir"       yaml:"plugin_dir"`
+	PolicyDir      string                `mapstructure:"policy_dir"       yaml:"policy_dir"`
+	Environment    string                `mapstructure:"environment"      yaml:"environment"`
+	Claw           ClawConfig            `mapstructure:"claw"             yaml:"claw"`
+	InspectLLM     InspectLLMConfig      `mapstructure:"inspect_llm"      yaml:"inspect_llm"`
+	CiscoAIDefense CiscoAIDefenseConfig  `mapstructure:"cisco_ai_defense" yaml:"cisco_ai_defense"`
+	Scanners       ScannersConfig        `mapstructure:"scanners"         yaml:"scanners"`
+	OpenShell      OpenShellConfig       `mapstructure:"openshell"        yaml:"openshell"`
+	Watch          WatchConfig           `mapstructure:"watch"            yaml:"watch"`
+	Firewall       FirewallConfig        `mapstructure:"firewall"         yaml:"firewall"`
+	Guardrail      GuardrailConfig       `mapstructure:"guardrail"        yaml:"guardrail"`
+	Splunk         SplunkConfig          `mapstructure:"splunk"           yaml:"splunk"`
+	Gateway        GatewayConfig         `mapstructure:"gateway"          yaml:"gateway"`
+	SkillActions   SkillActionsConfig    `mapstructure:"skill_actions"    yaml:"skill_actions"`
+	MCPActions     MCPActionsConfig      `mapstructure:"mcp_actions"      yaml:"mcp_actions"`
+	OTel           OTelConfig            `mapstructure:"otel"             yaml:"otel"`
 }
 
 type OTelConfig struct {
@@ -110,35 +112,43 @@ type WatchConfig struct {
 	AllowListBypassScan bool `mapstructure:"allow_list_bypass_scan" yaml:"allow_list_bypass_scan"`
 }
 
+type InspectLLMConfig struct {
+	Provider   string `mapstructure:"provider"    yaml:"provider"`
+	Model      string `mapstructure:"model"       yaml:"model"`
+	APIKey     string `mapstructure:"api_key"     yaml:"api_key"`
+	APIKeyEnv  string `mapstructure:"api_key_env" yaml:"api_key_env"`
+	BaseURL    string `mapstructure:"base_url"    yaml:"base_url"`
+	Timeout    int    `mapstructure:"timeout"     yaml:"timeout"`
+	MaxRetries int    `mapstructure:"max_retries" yaml:"max_retries"`
+}
+
+// ResolvedAPIKey returns the API key from the env var (if set) or the direct value.
+func (c *InspectLLMConfig) ResolvedAPIKey() string {
+	if c.APIKeyEnv != "" {
+		if v := os.Getenv(c.APIKeyEnv); v != "" {
+			return v
+		}
+	}
+	return c.APIKey
+}
+
 type SkillScannerConfig struct {
-	Binary         string `mapstructure:"binary"             yaml:"binary"`
-	UseLLM         bool   `mapstructure:"use_llm"            yaml:"use_llm"`
-	UseBehavioral  bool   `mapstructure:"use_behavioral"     yaml:"use_behavioral"`
-	EnableMeta     bool   `mapstructure:"enable_meta"        yaml:"enable_meta"`
-	UseTrigger     bool   `mapstructure:"use_trigger"        yaml:"use_trigger"`
-	UseVirusTotal  bool   `mapstructure:"use_virustotal"     yaml:"use_virustotal"`
-	UseAIDefense   bool   `mapstructure:"use_aidefense"      yaml:"use_aidefense"`
-	LLMProvider    string `mapstructure:"llm_provider"       yaml:"llm_provider"`
-	LLMModel       string `mapstructure:"llm_model"          yaml:"llm_model"`
-	LLMConsensus   int    `mapstructure:"llm_consensus_runs" yaml:"llm_consensus_runs"`
-	Policy         string `mapstructure:"policy"             yaml:"policy"`
-	Lenient        bool   `mapstructure:"lenient"            yaml:"lenient"`
-	LLMAPIKey      string `mapstructure:"llm_api_key"        yaml:"llm_api_key"`
-	VirusTotalKey  string `mapstructure:"virustotal_api_key" yaml:"virustotal_api_key"`
-	AIDefenseKey   string `mapstructure:"aidefense_api_key"  yaml:"aidefense_api_key"`
+	Binary        string `mapstructure:"binary"             yaml:"binary"`
+	UseLLM        bool   `mapstructure:"use_llm"            yaml:"use_llm"`
+	UseBehavioral bool   `mapstructure:"use_behavioral"     yaml:"use_behavioral"`
+	EnableMeta    bool   `mapstructure:"enable_meta"        yaml:"enable_meta"`
+	UseTrigger    bool   `mapstructure:"use_trigger"        yaml:"use_trigger"`
+	UseVirusTotal bool   `mapstructure:"use_virustotal"     yaml:"use_virustotal"`
+	UseAIDefense  bool   `mapstructure:"use_aidefense"      yaml:"use_aidefense"`
+	LLMConsensus  int    `mapstructure:"llm_consensus_runs" yaml:"llm_consensus_runs"`
+	Policy        string `mapstructure:"policy"             yaml:"policy"`
+	Lenient       bool   `mapstructure:"lenient"            yaml:"lenient"`
+	VirusTotalKey string `mapstructure:"virustotal_api_key" yaml:"virustotal_api_key"`
 }
 
 type MCPScannerConfig struct {
 	Binary           string `mapstructure:"binary"            yaml:"binary"`
 	Analyzers        string `mapstructure:"analyzers"         yaml:"analyzers"`
-	APIKey           string `mapstructure:"api_key"           yaml:"api_key"`
-	EndpointURL      string `mapstructure:"endpoint_url"      yaml:"endpoint_url"`
-	LLMProvider      string `mapstructure:"llm_provider"      yaml:"llm_provider"`
-	LLMAPIKey        string `mapstructure:"llm_api_key"       yaml:"llm_api_key"`
-	LLMModel         string `mapstructure:"llm_model"         yaml:"llm_model"`
-	LLMBaseURL       string `mapstructure:"llm_base_url"      yaml:"llm_base_url"`
-	LLMTimeout       int    `mapstructure:"llm_timeout"       yaml:"llm_timeout"`
-	LLMMaxRetries    int    `mapstructure:"llm_max_retries"   yaml:"llm_max_retries"`
 	ScanPrompts      bool   `mapstructure:"scan_prompts"      yaml:"scan_prompts"`
 	ScanResources    bool   `mapstructure:"scan_resources"    yaml:"scan_resources"`
 	ScanInstructions bool   `mapstructure:"scan_instructions" yaml:"scan_instructions"`
@@ -169,24 +179,34 @@ type GatewayWatcherConfig struct {
 
 type CiscoAIDefenseConfig struct {
 	Endpoint     string   `mapstructure:"endpoint"       yaml:"endpoint"`
+	APIKey       string   `mapstructure:"api_key"        yaml:"api_key"`
 	APIKeyEnv    string   `mapstructure:"api_key_env"    yaml:"api_key_env"`
 	TimeoutMs    int      `mapstructure:"timeout_ms"     yaml:"timeout_ms"`
 	EnabledRules []string `mapstructure:"enabled_rules"  yaml:"enabled_rules"`
 }
 
+// ResolvedAPIKey returns the API key from the env var (if set) or the direct value.
+func (c *CiscoAIDefenseConfig) ResolvedAPIKey() string {
+	if c.APIKeyEnv != "" {
+		if v := os.Getenv(c.APIKeyEnv); v != "" {
+			return v
+		}
+	}
+	return c.APIKey
+}
+
 type GuardrailConfig struct {
-	Enabled        bool                 `mapstructure:"enabled"          yaml:"enabled"`
-	Mode           string               `mapstructure:"mode"             yaml:"mode"`
-	ScannerMode    string               `mapstructure:"scanner_mode"     yaml:"scanner_mode"`
-	Port           int                  `mapstructure:"port"             yaml:"port"`
-	Model          string               `mapstructure:"model"            yaml:"model"`
-	ModelName      string               `mapstructure:"model_name"       yaml:"model_name"`
-	APIKeyEnv      string               `mapstructure:"api_key_env"      yaml:"api_key_env"`
-	GuardrailDir   string               `mapstructure:"guardrail_dir"    yaml:"guardrail_dir"`
-	LiteLLMConfig  string               `mapstructure:"litellm_config"   yaml:"litellm_config"`
-	OriginalModel  string               `mapstructure:"original_model"   yaml:"original_model"`
-	BlockMessage   string               `mapstructure:"block_message"    yaml:"block_message"`
-	CiscoAIDefense CiscoAIDefenseConfig `mapstructure:"cisco_ai_defense" yaml:"cisco_ai_defense"`
+	Enabled       bool   `mapstructure:"enabled"        yaml:"enabled"`
+	Mode          string `mapstructure:"mode"            yaml:"mode"`
+	ScannerMode   string `mapstructure:"scanner_mode"    yaml:"scanner_mode"`
+	Port          int    `mapstructure:"port"            yaml:"port"`
+	Model         string `mapstructure:"model"           yaml:"model"`
+	ModelName     string `mapstructure:"model_name"      yaml:"model_name"`
+	APIKeyEnv     string `mapstructure:"api_key_env"     yaml:"api_key_env"`
+	GuardrailDir  string `mapstructure:"guardrail_dir"   yaml:"guardrail_dir"`
+	LiteLLMConfig string `mapstructure:"litellm_config"  yaml:"litellm_config"`
+	OriginalModel string `mapstructure:"original_model"  yaml:"original_model"`
+	BlockMessage  string `mapstructure:"block_message"   yaml:"block_message"`
 }
 
 type GatewayConfig struct {
@@ -323,6 +343,20 @@ func setDefaults(dataDir string) {
 	viper.SetDefault("claw.home_dir", "~/.openclaw")
 	viper.SetDefault("claw.config_file", "~/.openclaw/openclaw.json")
 
+	viper.SetDefault("inspect_llm.provider", "")
+	viper.SetDefault("inspect_llm.model", "")
+	viper.SetDefault("inspect_llm.api_key", "")
+	viper.SetDefault("inspect_llm.api_key_env", "")
+	viper.SetDefault("inspect_llm.base_url", "")
+	viper.SetDefault("inspect_llm.timeout", 30)
+	viper.SetDefault("inspect_llm.max_retries", 3)
+
+	viper.SetDefault("cisco_ai_defense.endpoint", "https://us.api.inspect.aidefense.security.cisco.com")
+	viper.SetDefault("cisco_ai_defense.api_key", "")
+	viper.SetDefault("cisco_ai_defense.api_key_env", "CISCO_AI_DEFENSE_API_KEY")
+	viper.SetDefault("cisco_ai_defense.timeout_ms", 3000)
+	viper.SetDefault("cisco_ai_defense.enabled_rules", []string{})
+
 	viper.SetDefault("scanners.skill_scanner.binary", "skill-scanner")
 	viper.SetDefault("scanners.skill_scanner.use_llm", false)
 	viper.SetDefault("scanners.skill_scanner.use_behavioral", false)
@@ -330,24 +364,12 @@ func setDefaults(dataDir string) {
 	viper.SetDefault("scanners.skill_scanner.use_trigger", false)
 	viper.SetDefault("scanners.skill_scanner.use_virustotal", false)
 	viper.SetDefault("scanners.skill_scanner.use_aidefense", false)
-	viper.SetDefault("scanners.skill_scanner.llm_provider", "")
-	viper.SetDefault("scanners.skill_scanner.llm_model", "")
 	viper.SetDefault("scanners.skill_scanner.llm_consensus_runs", 0)
-	viper.SetDefault("scanners.skill_scanner.policy", "")
-	viper.SetDefault("scanners.skill_scanner.lenient", false)
-	viper.SetDefault("scanners.skill_scanner.llm_api_key", "")
+	viper.SetDefault("scanners.skill_scanner.policy", "permissive")
+	viper.SetDefault("scanners.skill_scanner.lenient", true)
 	viper.SetDefault("scanners.skill_scanner.virustotal_api_key", "")
-	viper.SetDefault("scanners.skill_scanner.aidefense_api_key", "")
 	viper.SetDefault("scanners.mcp_scanner.binary", "mcp-scanner")
-	viper.SetDefault("scanners.mcp_scanner.analyzers", "")
-	viper.SetDefault("scanners.mcp_scanner.api_key", "")
-	viper.SetDefault("scanners.mcp_scanner.endpoint_url", "")
-	viper.SetDefault("scanners.mcp_scanner.llm_provider", "")
-	viper.SetDefault("scanners.mcp_scanner.llm_api_key", "")
-	viper.SetDefault("scanners.mcp_scanner.llm_model", "")
-	viper.SetDefault("scanners.mcp_scanner.llm_base_url", "")
-	viper.SetDefault("scanners.mcp_scanner.llm_timeout", 30)
-	viper.SetDefault("scanners.mcp_scanner.llm_max_retries", 3)
+	viper.SetDefault("scanners.mcp_scanner.analyzers", "yara")
 	viper.SetDefault("scanners.mcp_scanner.scan_prompts", false)
 	viper.SetDefault("scanners.mcp_scanner.scan_resources", false)
 	viper.SetDefault("scanners.mcp_scanner.scan_instructions", false)
@@ -409,10 +431,6 @@ func setDefaults(dataDir string) {
 	viper.SetDefault("guardrail.guardrail_dir", dataDir)
 	viper.SetDefault("guardrail.litellm_config", filepath.Join(dataDir, "litellm_config.yaml"))
 	viper.SetDefault("guardrail.block_message", "")
-	viper.SetDefault("guardrail.cisco_ai_defense.endpoint", "https://us.api.inspect.aidefense.security.cisco.com")
-	viper.SetDefault("guardrail.cisco_ai_defense.api_key_env", "CISCO_AI_DEFENSE_API_KEY")
-	viper.SetDefault("guardrail.cisco_ai_defense.timeout_ms", 3000)
-	viper.SetDefault("guardrail.cisco_ai_defense.enabled_rules", []string{})
 
 	viper.SetDefault("gateway.host", "127.0.0.1")
 	viper.SetDefault("gateway.port", 18789)
@@ -422,10 +440,10 @@ func setDefaults(dataDir string) {
 	viper.SetDefault("gateway.reconnect_ms", 800)
 	viper.SetDefault("gateway.max_reconnect_ms", 15000)
 	viper.SetDefault("gateway.approval_timeout_s", 30)
-	viper.SetDefault("gateway.api_port", 18790)
-	viper.SetDefault("gateway.watcher.enabled", false)
+	viper.SetDefault("gateway.api_port", 18970)
+	viper.SetDefault("gateway.watcher.enabled", true)
 	viper.SetDefault("gateway.watcher.skill.enabled", true)
-	viper.SetDefault("gateway.watcher.skill.take_action", true)
+	viper.SetDefault("gateway.watcher.skill.take_action", false)
 	viper.SetDefault("gateway.watcher.skill.dirs", []string{})
 
 	viper.SetDefault("otel.enabled", false)

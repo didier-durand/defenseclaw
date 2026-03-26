@@ -19,23 +19,25 @@ class TestMCPScannerWrapper(unittest.TestCase):
         self.assertEqual(s.name(), "mcp-scanner")
 
     def test_config_fields_used_directly(self):
-        """Config values are passed to SDK without env var fallback."""
-        from defenseclaw.config import MCPScannerConfig
+        """Common config values are accessible via wrapper."""
+        from defenseclaw.config import MCPScannerConfig, InspectLLMConfig, CiscoAIDefenseConfig
         from defenseclaw.scanner.mcp import MCPScannerWrapper
 
-        cfg = MCPScannerConfig(
-            api_key="cfg-api-key",
-            endpoint_url="https://scanner.example.com",
-            llm_api_key="cfg-llm-key",
-            llm_model="gpt-4o",
-            llm_base_url="https://llm.example.com",
+        llm = InspectLLMConfig(
+            api_key="cfg-llm-key",
+            model="gpt-4o",
+            base_url="https://llm.example.com",
         )
-        s = MCPScannerWrapper(cfg)
-        self.assertEqual(s.config.api_key, "cfg-api-key")
-        self.assertEqual(s.config.endpoint_url, "https://scanner.example.com")
-        self.assertEqual(s.config.llm_api_key, "cfg-llm-key")
-        self.assertEqual(s.config.llm_model, "gpt-4o")
-        self.assertEqual(s.config.llm_base_url, "https://llm.example.com")
+        aid = CiscoAIDefenseConfig(
+            api_key="cfg-api-key",
+            endpoint="https://scanner.example.com",
+        )
+        s = MCPScannerWrapper(MCPScannerConfig(), llm, aid)
+        self.assertEqual(s.cisco_ai_defense.api_key, "cfg-api-key")
+        self.assertEqual(s.cisco_ai_defense.endpoint, "https://scanner.example.com")
+        self.assertEqual(s.inspect_llm.api_key, "cfg-llm-key")
+        self.assertEqual(s.inspect_llm.model, "gpt-4o")
+        self.assertEqual(s.inspect_llm.base_url, "https://llm.example.com")
 
     def test_convert_empty_findings(self):
         from defenseclaw.config import MCPScannerConfig
@@ -322,11 +324,11 @@ class TestSkillScannerWrapper(unittest.TestCase):
         self.assertEqual(s.name(), "skill-scanner")
 
     def test_inject_env_sets_vars(self):
-        from defenseclaw.config import SkillScannerConfig
+        from defenseclaw.config import SkillScannerConfig, InspectLLMConfig
         from defenseclaw.scanner.skill import SkillScannerWrapper
 
-        cfg = SkillScannerConfig(llm_api_key="test-key-value", llm_model="gpt-4")
-        s = SkillScannerWrapper(cfg)
+        llm = InspectLLMConfig(api_key="test-key-value", model="gpt-4")
+        s = SkillScannerWrapper(SkillScannerConfig(), llm)
 
         env_backup = {}
         for k in ["SKILL_SCANNER_LLM_API_KEY", "SKILL_SCANNER_LLM_MODEL"]:
@@ -343,11 +345,11 @@ class TestSkillScannerWrapper(unittest.TestCase):
             os.environ.update(env_backup)
 
     def test_inject_env_does_not_override_existing(self):
-        from defenseclaw.config import SkillScannerConfig
+        from defenseclaw.config import SkillScannerConfig, InspectLLMConfig
         from defenseclaw.scanner.skill import SkillScannerWrapper
 
-        cfg = SkillScannerConfig(llm_api_key="new-key")
-        s = SkillScannerWrapper(cfg)
+        llm = InspectLLMConfig(api_key="new-key")
+        s = SkillScannerWrapper(SkillScannerConfig(), llm)
 
         os.environ["SKILL_SCANNER_LLM_API_KEY"] = "original-key"
         try:
@@ -445,6 +447,122 @@ class TestSkillScannerWrapper(unittest.TestCase):
 
         self.assertTrue(result.is_clean())
         self.assertEqual(result.scanner, "skill-scanner")
+
+
+class TestMCPScannerCommonConfigs(unittest.TestCase):
+    """Tests for MCPScannerWrapper using shared InspectLLM and CiscoAIDefense configs."""
+
+    def test_defaults_when_no_common_configs(self):
+        from defenseclaw.config import MCPScannerConfig
+        from defenseclaw.scanner.mcp import MCPScannerWrapper
+
+        s = MCPScannerWrapper(MCPScannerConfig())
+        self.assertEqual(s.inspect_llm.provider, "")
+        self.assertEqual(s.inspect_llm.api_key, "")
+        self.assertEqual(s.cisco_ai_defense.endpoint, "https://us.api.inspect.aidefense.security.cisco.com")
+
+    def test_inject_env_sets_provider_key(self):
+        """_inject_env sets the provider-specific env var (e.g. OPENAI_API_KEY)."""
+        from defenseclaw.config import MCPScannerConfig, InspectLLMConfig, CiscoAIDefenseConfig
+        from defenseclaw.scanner.mcp import MCPScannerWrapper
+
+        llm = InspectLLMConfig(api_key="llm-key-123", provider="openai")
+        aid = CiscoAIDefenseConfig(api_key="cisco-key-456", api_key_env="")
+        s = MCPScannerWrapper(MCPScannerConfig(), llm, aid)
+
+        os.environ.pop("OPENAI_API_KEY", None)
+
+        try:
+            s._inject_env()
+            self.assertEqual(os.environ.get("OPENAI_API_KEY"), "llm-key-123")
+        finally:
+            os.environ.pop("OPENAI_API_KEY", None)
+
+    def test_resolve_llm_base_url_from_provider(self):
+        from defenseclaw.config import MCPScannerConfig, InspectLLMConfig
+        from defenseclaw.scanner.mcp import MCPScannerWrapper
+
+        llm = InspectLLMConfig(provider="openai")
+        s = MCPScannerWrapper(MCPScannerConfig(), llm)
+        self.assertEqual(s._resolve_llm_base_url(), "https://api.openai.com")
+
+    def test_resolve_llm_base_url_explicit(self):
+        from defenseclaw.config import MCPScannerConfig, InspectLLMConfig
+        from defenseclaw.scanner.mcp import MCPScannerWrapper
+
+        llm = InspectLLMConfig(provider="openai", base_url="https://custom.llm.api")
+        s = MCPScannerWrapper(MCPScannerConfig(), llm)
+        self.assertEqual(s._resolve_llm_base_url(), "https://custom.llm.api")
+
+    def test_resolve_llm_base_url_unknown_provider(self):
+        from defenseclaw.config import MCPScannerConfig, InspectLLMConfig
+        from defenseclaw.scanner.mcp import MCPScannerWrapper
+
+        llm = InspectLLMConfig(provider="bedrock")
+        s = MCPScannerWrapper(MCPScannerConfig(), llm)
+        self.assertEqual(s._resolve_llm_base_url(), "")
+
+
+class TestSkillScannerCommonConfigs(unittest.TestCase):
+    """Tests for SkillScannerWrapper using shared InspectLLM and CiscoAIDefense configs."""
+
+    def test_defaults_when_no_common_configs(self):
+        from defenseclaw.config import SkillScannerConfig
+        from defenseclaw.scanner.skill import SkillScannerWrapper
+
+        s = SkillScannerWrapper(SkillScannerConfig())
+        self.assertEqual(s.inspect_llm.provider, "")
+        self.assertEqual(s.cisco_ai_defense.api_key, "")
+
+    def test_inject_env_uses_inspect_llm(self):
+        from defenseclaw.config import SkillScannerConfig, InspectLLMConfig, CiscoAIDefenseConfig
+        from defenseclaw.scanner.skill import SkillScannerWrapper
+
+        llm = InspectLLMConfig(api_key="shared-llm-key", model="gpt-4o")
+        aid = CiscoAIDefenseConfig(api_key="shared-aid-key", api_key_env="")
+        s = SkillScannerWrapper(SkillScannerConfig(), llm, aid)
+
+        for k in ["SKILL_SCANNER_LLM_API_KEY", "SKILL_SCANNER_LLM_MODEL", "AI_DEFENSE_API_KEY"]:
+            os.environ.pop(k, None)
+
+        try:
+            s._inject_env()
+            self.assertEqual(os.environ.get("SKILL_SCANNER_LLM_API_KEY"), "shared-llm-key")
+            self.assertEqual(os.environ.get("SKILL_SCANNER_LLM_MODEL"), "gpt-4o")
+            self.assertEqual(os.environ.get("AI_DEFENSE_API_KEY"), "shared-aid-key")
+        finally:
+            for k in ["SKILL_SCANNER_LLM_API_KEY", "SKILL_SCANNER_LLM_MODEL", "AI_DEFENSE_API_KEY"]:
+                os.environ.pop(k, None)
+
+    def test_inject_env_cisco_resolved_from_env_var(self):
+        from defenseclaw.config import SkillScannerConfig, CiscoAIDefenseConfig
+        from defenseclaw.scanner.skill import SkillScannerWrapper
+
+        aid = CiscoAIDefenseConfig(api_key="direct", api_key_env="TEST_CISCO_RESOLVE_XYZ")
+        os.environ["TEST_CISCO_RESOLVE_XYZ"] = "env-resolved"
+        os.environ.pop("AI_DEFENSE_API_KEY", None)
+
+        try:
+            s = SkillScannerWrapper(SkillScannerConfig(), cisco_ai_defense=aid)
+            s._inject_env()
+            self.assertEqual(os.environ.get("AI_DEFENSE_API_KEY"), "env-resolved")
+        finally:
+            os.environ.pop("TEST_CISCO_RESOLVE_XYZ", None)
+            os.environ.pop("AI_DEFENSE_API_KEY", None)
+
+    def test_inject_env_virustotal_still_from_scanner_config(self):
+        from defenseclaw.config import SkillScannerConfig
+        from defenseclaw.scanner.skill import SkillScannerWrapper
+
+        cfg = SkillScannerConfig(virustotal_api_key="vt-key-abc")
+        s = SkillScannerWrapper(cfg)
+
+        os.environ.pop("VIRUSTOTAL_API_KEY", None)
+        try:
+            s._inject_env()
+            self.assertEqual(os.environ.get("VIRUSTOTAL_API_KEY"), "vt-key-abc")
+        finally:
+            os.environ.pop("VIRUSTOTAL_API_KEY", None)
 
 
 if __name__ == "__main__":

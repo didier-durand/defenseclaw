@@ -8,9 +8,12 @@ INSTALL_DIR := $(HOME)/.local/bin
 PLUGIN_DIR  := extensions/defenseclaw
 DC_EXT_DIR  := $(HOME)/.defenseclaw/extensions/defenseclaw
 
+DIST_DIR    := dist
+
 .PHONY: build install dev-install pycli dev-pycli gateway gateway-cross gateway-run gateway-install \
         plugin plugin-install test cli-test cli-test-cov gateway-test go-test-cov \
-        test-verbose test-file lint py-lint go-lint ts-test rego-test clean
+        test-verbose test-file lint py-lint go-lint ts-test rego-test clean \
+        dist dist-cli dist-gateway dist-plugin dist-checksums dist-clean
 
 # ---------------------------------------------------------------------------
 # Aggregate targets
@@ -160,9 +163,72 @@ py-lint:
 go-lint:
 	PATH="$(GOBIN):$(PATH)" golangci-lint run
 
+# ---------------------------------------------------------------------------
+# Distribution targets — build release artifacts into dist/
+# ---------------------------------------------------------------------------
+
+dist: dist-cli dist-gateway dist-plugin dist-checksums
+	@echo ""
+	@echo "Release artifacts:"
+	@ls -lh $(DIST_DIR)/
+	@echo ""
+	@echo "Test locally:"
+	@echo "  ./scripts/install.sh --local $(DIST_DIR)"
+	@echo ""
+	@echo "Upload to GitHub release:"
+	@echo "  gh release create v$(VERSION) $(DIST_DIR)/*"
+
+dist-cli: _bundle-data
+	@mkdir -p $(DIST_DIR)
+	@rm -rf build cli/*.egg-info
+	uv build --wheel --out-dir $(DIST_DIR)
+
+_bundle-data:
+	@mkdir -p cli/defenseclaw/_data/guardrails
+	@mkdir -p cli/defenseclaw/_data/policies/rego
+	@mkdir -p cli/defenseclaw/_data/skills
+	cp guardrails/defenseclaw_guardrail.py cli/defenseclaw/_data/guardrails/
+	cp policies/rego/*.rego cli/defenseclaw/_data/policies/rego/
+	rm -f cli/defenseclaw/_data/policies/rego/*_test.rego
+	cp policies/rego/data.json cli/defenseclaw/_data/policies/rego/
+	cp policies/*.yaml cli/defenseclaw/_data/policies/
+	cp -r skills/codeguard cli/defenseclaw/_data/skills/
+
+dist-gateway:
+	@mkdir -p $(DIST_DIR)
+	@for pair in linux/amd64 linux/arm64 darwin/amd64 darwin/arm64; do \
+		goos=$${pair%%/*}; goarch=$${pair##*/}; \
+		echo "Building gateway $${goos}/$${goarch}..."; \
+		CGO_ENABLED=0 GOOS=$$goos GOARCH=$$goarch go build \
+			-ldflags "-s -w -X main.version=$(VERSION)" \
+			-o $(DIST_DIR)/$(GATEWAY)-$${goos}-$${goarch} \
+			./cmd/defenseclaw; \
+	done
+	@echo "Gateway binaries built for all platforms"
+
+dist-plugin: plugin
+	@mkdir -p $(DIST_DIR)
+	tar -czf $(DIST_DIR)/defenseclaw-plugin-$(VERSION).tar.gz \
+		-C $(PLUGIN_DIR) \
+		package.json openclaw.plugin.json dist/ \
+		$$(cd $(PLUGIN_DIR) && for dep in js-yaml argparse; do \
+			[ -d "node_modules/$$dep" ] && echo "node_modules/$$dep"; \
+		done)
+	@echo "Plugin tarball built"
+
+dist-checksums:
+	@test -d $(DIST_DIR) || { echo "Run 'make dist' first"; exit 1; }
+	cd $(DIST_DIR) && shasum -a 256 * > checksums.txt
+	@echo "Checksums written to $(DIST_DIR)/checksums.txt"
+
+dist-clean:
+	rm -rf $(DIST_DIR)
+	rm -rf cli/defenseclaw/_data
+
 clean:
 	rm -f $(GATEWAY) $(BINARY)-linux-* $(BINARY)-darwin-*
 	rm -rf $(VENV) cli/*.egg-info
 	rm -rf $(PLUGIN_DIR)/dist $(PLUGIN_DIR)/node_modules
 	rm -f coverage.out coverage-py.xml
+	rm -rf cli/defenseclaw/_data
 	find cli/ -type d -name __pycache__ -exec rm -rf {} + 2>/dev/null || true
