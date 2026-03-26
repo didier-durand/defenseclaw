@@ -17,6 +17,8 @@ People working on this project: **Arjun**, **Vineeth**, and **Idan**.
 
 - Design and implement OpenShell integration and security layer
 - Firewall plugin hook: prompt injection, tool inspection, data exfiltration
+- Native firewall plugin
+- AI Defense API based integration (optional)
 
 ### Arjun — systems and architecture
 

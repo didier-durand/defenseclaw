@@ -8,6 +8,7 @@ from __future__ import annotations
 import os
 import shutil
 import subprocess
+import sys
 
 import click
 
@@ -143,8 +144,16 @@ def _install_guardrail(cfg, logger, skip: bool) -> None:
         click.echo("  LiteLLM: skipped (--skip-install)")
         return
 
-    if shutil.which("litellm"):
-        click.echo("  LiteLLM: already installed")
+    if _litellm_proxy_ready():
+        click.echo("  LiteLLM: proxy extras verified")
+    elif shutil.which("litellm"):
+        click.echo("  LiteLLM: binary found but proxy extras missing, installing...", nl=False)
+        if _install_litellm_proxy_extras():
+            click.echo(" done")
+            logger.log_action("install-dep", "litellm", "package=litellm[proxy]")
+        else:
+            click.echo(" failed")
+            click.echo("    install manually: pip install 'litellm[proxy]'")
     else:
         click.echo("  LiteLLM: installing...", nl=False)
         if _install_litellm():
@@ -184,6 +193,43 @@ def _find_guardrail_source() -> str | None:
         if os.path.isfile(resolved):
             return resolved
     return None
+
+
+def _litellm_proxy_ready() -> bool:
+    """Check that litellm binary exists AND its proxy extras are importable."""
+    litellm_bin = shutil.which("litellm")
+    if not litellm_bin:
+        return False
+    try:
+        result = subprocess.run(
+            [sys.executable, "-c", "import backoff; import prisma"],
+            capture_output=True, text=True, timeout=10,
+        )
+        return result.returncode == 0
+    except (subprocess.CalledProcessError, FileNotFoundError, subprocess.TimeoutExpired):
+        return False
+
+
+def _install_litellm_proxy_extras() -> bool:
+    """Install litellm[proxy] extras into the active Python environment."""
+    pip = shutil.which("pip") or shutil.which("pip3")
+    uv = shutil.which("uv")
+    try:
+        if uv:
+            result = subprocess.run(
+                [uv, "pip", "install", "litellm[proxy]"],
+                capture_output=True, text=True,
+            )
+        elif pip:
+            result = subprocess.run(
+                [pip, "install", "litellm[proxy]"],
+                capture_output=True, text=True,
+            )
+        else:
+            return False
+        return result.returncode == 0
+    except (subprocess.CalledProcessError, FileNotFoundError):
+        return False
 
 
 def _install_litellm() -> bool:

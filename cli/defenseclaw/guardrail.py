@@ -33,11 +33,24 @@ def generate_litellm_config(
                 "litellm_params": {
                     "model": model,
                     "api_key": f"os.environ/{api_key_env}",
+                    "drop_params": True,
                 },
             },
         ],
+        "litellm_settings": {
+            "drop_params": True,
+        },
         "general_settings": {
             "master_key": master_key,
+        },
+        "router_settings": {
+            "num_retries": 2,
+            "retry_after": 0,
+            "retry_policy": {
+                "BadRequestErrorRetries": 0,
+                "AuthenticationErrorRetries": 0,
+                "ContentPolicyViolationErrorRetries": 0,
+            },
         },
         "guardrails": [
             {

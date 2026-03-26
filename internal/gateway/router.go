@@ -234,13 +234,16 @@ func (r *EventRouter) handleToolCall(evt EventFrame) {
 	_ = r.logger.LogAction("gateway-tool-call", payload.Tool,
 		fmt.Sprintf("status=%s args_length=%d", payload.Status, len(payload.Args)))
 
-	dangerous := r.isDangerousTool(payload.Tool, payload.Args)
+	// Use the shared rule engine — no tool-name gating.
+	findings := ScanAllRules(string(payload.Args), payload.Tool)
+	dangerous := len(findings) > 0 && severityRank[HighestSeverity(findings)] >= severityRank["HIGH"]
 	flaggedPattern := ""
 	if dangerous {
-		flaggedPattern = r.matchedPattern(payload.Tool, payload.Args)
+		flaggedPattern = findings[0].RuleID
 		_ = r.logger.LogAction("gateway-tool-call-flagged", payload.Tool,
-			fmt.Sprintf("reason=dangerous-pattern pattern=%s", flaggedPattern))
-		fmt.Fprintf(os.Stderr, "[sidecar] FLAGGED tool call: %s\n", payload.Tool)
+			fmt.Sprintf("reason=%s severity=%s confidence=%.2f",
+				findings[0].RuleID, findings[0].Severity, findings[0].Confidence))
+		fmt.Fprintf(os.Stderr, "[sidecar] FLAGGED tool call: %s (%s)\n", payload.Tool, findings[0].Title)
 	}
 
 	if r.otel != nil {
@@ -319,12 +322,27 @@ func (r *EventRouter) handleApprovalRequest(evt EventFrame) {
 		_, approvalSpan = r.otel.StartApprovalSpan(context.Background(), payload.ID, rawCmd, argv, cwd)
 	}
 
-	dangerous := r.isCommandDangerous(rawCmd) || r.isArgvDangerous(argv)
+	cmdFindings := ScanAllRules(rawCmd, "shell")
+	argvFindings := ScanAllRules(strings.Join(argv, " "), "shell")
+	allFindings := append(cmdFindings, argvFindings...)
+	dangerousByRules := len(allFindings) > 0 && severityRank[HighestSeverity(allFindings)] >= severityRank["HIGH"]
+	dangerousByLegacy := r.isCommandDangerous(rawCmd) || r.isArgvDangerous(argv)
+	dangerous := dangerousByRules || dangerousByLegacy
+	topFinding := RuleFinding{RuleID: "UNKNOWN", Title: "dangerous command pattern"}
+	for _, f := range allFindings {
+		if severityRank[f.Severity] >= severityRank["HIGH"] {
+			topFinding = f
+			break
+		}
+	}
+	if topFinding.RuleID == "UNKNOWN" && dangerousByLegacy {
+		topFinding = RuleFinding{RuleID: "LEGACY-DANGEROUS-PATTERN", Title: "legacy dangerous command pattern"}
+	}
 
 	if dangerous {
 		_ = r.logger.LogAction("gateway-approval-denied", payload.ID,
-			fmt.Sprintf("reason=dangerous-command command_name=%s", cmdName))
-		fmt.Fprintf(os.Stderr, "[sidecar] DENIED exec approval: %s\n", cmdName)
+			fmt.Sprintf("reason=%s command_name=%s", topFinding.RuleID, cmdName))
+		fmt.Fprintf(os.Stderr, "[sidecar] DENIED exec approval: %s (%s)\n", cmdName, topFinding.Title)
 
 		if r.otel != nil {
 			r.otel.EndApprovalSpan(approvalSpan, "denied", "dangerous-command", false, true)
@@ -376,6 +394,27 @@ func (r *EventRouter) approvalCtx() (context.Context, context.CancelFunc) {
 	return context.WithTimeout(context.Background(), 10*time.Second)
 }
 
+func truncate(s string, max int) string {
+	if len(s) <= max {
+		return s
+	}
+	return s[:max] + "..."
+}
+
+func baseCommand(cmd string) string {
+	cmd = strings.TrimSpace(cmd)
+	if cmd == "" {
+		return ""
+	}
+	fields := strings.Fields(cmd)
+	base := fields[0]
+	if idx := strings.LastIndex(base, "/"); idx >= 0 {
+		base = base[idx+1:]
+	}
+	return base
+}
+
+// Legacy pattern helpers retained for backward-compat tests and fallback checks.
 var dangerousPatterns = []string{
 	"curl",
 	"wget",
@@ -402,29 +441,6 @@ var dangerousPatterns = []string{
 	"sudoers",
 }
 
-func (r *EventRouter) isDangerousTool(tool string, args json.RawMessage) bool {
-	if tool != "shell" && tool != "system.run" && tool != "exec" {
-		return false
-	}
-
-	argsStr := strings.ToLower(string(args))
-	for _, pattern := range dangerousPatterns {
-		if strings.Contains(argsStr, pattern) {
-			return true
-		}
-	}
-	return false
-}
-
-func (r *EventRouter) matchedPattern(tool string, args json.RawMessage) string {
-	argsStr := strings.ToLower(string(args))
-	for _, pattern := range dangerousPatterns {
-		if strings.Contains(argsStr, pattern) {
-			return pattern
-		}
-	}
-	return ""
-}
 
 func (r *EventRouter) isCommandDangerous(rawCmd string) bool {
 	lower := strings.ToLower(rawCmd)
@@ -436,9 +452,7 @@ func (r *EventRouter) isCommandDangerous(rawCmd string) bool {
 	return false
 }
 
-// isArgvDangerous checks the parsed argv array for dangerous patterns.
-// This catches cases where rawCommand is empty/obfuscated but argv contains
-// the actual dangerous binary or arguments.
+// isArgvDangerous checks parsed argv for legacy dangerous patterns.
 func (r *EventRouter) isArgvDangerous(argv []string) bool {
 	if len(argv) == 0 {
 		return false
@@ -462,31 +476,10 @@ func (r *EventRouter) isArgvDangerous(argv []string) bool {
 			return true
 		}
 	}
-
 	return false
 }
 
 var dangerousBinaries = []string{
 	"curl", "wget", "nc", "ncat", "netcat",
 	"dd", "mkfs", "rm",
-}
-
-func truncate(s string, max int) string {
-	if len(s) <= max {
-		return s
-	}
-	return s[:max] + "..."
-}
-
-func baseCommand(cmd string) string {
-	cmd = strings.TrimSpace(cmd)
-	if cmd == "" {
-		return ""
-	}
-	fields := strings.Fields(cmd)
-	base := fields[0]
-	if idx := strings.LastIndex(base, "/"); idx >= 0 {
-		base = base[idx+1:]
-	}
-	return base
 }

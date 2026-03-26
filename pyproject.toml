@@ -9,14 +9,14 @@ dependencies = [
     "click==8.3.1",
     "pyyaml==6.0.3",
     "requests==2.33.0",
-    "rich==14.3.3",
-    "cisco-ai-skill-scanner==2.0.5",
-    "cisco-ai-mcp-scanner==4.3.1; python_version>='3.11'",
-    "litellm==1.80.16",
+    "rich>=13.0",
+    "cisco-ai-skill-scanner==2.0.6",
+    "cisco-ai-mcp-scanner>=4.3; python_version>='3.11'",
 ]
 
 [project.optional-dependencies]
-tui = ["textual==8.1.1"]
+tui = ["textual>=0.50"]
+guardrail = ["litellm[proxy]>=1.82.3"]
 
 [dependency-groups]
 dev = [
@@ -37,6 +37,9 @@ where = ["cli"]
 
 [tool.uv]
 default-groups = ["dev"]
+# cisco-ai-skill-scanner 2.0.6 pins rich==14.2.0 but also pins
+# litellm==1.82.3 which requires rich<14. Override to resolve.
+override-dependencies = ["rich>=13.7.1,<14.0.0"]
 
 [tool.ruff]
 target-version = "py310"

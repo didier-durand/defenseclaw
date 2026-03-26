@@ -611,6 +611,19 @@ def setup_guardrail(
 
     click.echo()
 
+    # --- Step 0: Ensure litellm[proxy] extras are installed ---
+    from defenseclaw.commands.cmd_init import _install_litellm_proxy_extras, _litellm_proxy_ready
+    if _litellm_proxy_ready():
+        click.echo("  ✓ LiteLLM proxy extras verified")
+    else:
+        click.echo("  LiteLLM proxy extras missing, installing...", nl=False)
+        if _install_litellm_proxy_extras():
+            click.echo(" done")
+        else:
+            click.echo(" failed")
+            click.echo("    Install manually: pip install 'litellm[proxy]'")
+            warnings.append("litellm[proxy] extras not installed — proxy will fail to start")
+
     # --- Step 1: Generate and write LiteLLM config ---
     litellm_cfg = generate_litellm_config(
         model=gc.model,

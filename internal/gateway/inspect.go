@@ -20,98 +20,55 @@ type ToolInspectRequest struct {
 
 // ToolInspectVerdict is the response from the inspect endpoint.
 type ToolInspectVerdict struct {
-	Action   string   `json:"action"`
-	Severity string   `json:"severity"`
-	Reason   string   `json:"reason"`
-	Findings []string `json:"findings"`
-	Mode     string   `json:"mode"`
+	Action          string        `json:"action"`
+	Severity        string        `json:"severity"`
+	Confidence      float64       `json:"confidence"`
+	Reason          string        `json:"reason"`
+	Findings        []string      `json:"findings"`
+	DetailedFindings []RuleFinding `json:"detailed_findings,omitempty"`
+	Mode            string        `json:"mode"`
 }
 
-var secretPatterns = []string{
-	"sk-", "sk-ant-", "sk-proj-", "api_key=", "apikey=",
-	"-----begin rsa", "-----begin private", "-----begin openssh",
-	"aws_access_key", "aws_secret_access", "password=",
-	"token:", "bearer ", "ghp_", "gho_", "github_pat_",
-}
-
-var exfilPatterns = []string{
-	"/etc/passwd", "/etc/shadow", "base64 -d", "base64 --decode",
-	"exfiltrate", "send to my server", "curl http",
-}
-
-func scanPatterns(text string, patterns []string) []string {
-	lower := strings.ToLower(text)
-	var matched []string
-	for _, p := range patterns {
-		if strings.Contains(lower, p) {
-			matched = append(matched, p)
-		}
-	}
-	return matched
-}
-
-// inspectToolPolicy checks whether the tool+args combination matches
-// dangerous patterns or is on the block list (tool-level policy).
+// inspectToolPolicy runs all rule categories against the tool args.
+// No tool-name gating — every pattern fires on every tool.
 func (a *APIServer) inspectToolPolicy(req *ToolInspectRequest) *ToolInspectVerdict {
-	var findings []string
+	argsStr := string(req.Args)
+	toolName := req.Tool
 
-	argsStr := strings.ToLower(string(req.Args))
-	tool := strings.ToLower(req.Tool)
+	ruleFindings := ScanAllRules(argsStr, toolName)
 
-	isExecTool := tool == "shell" || tool == "system.run" || tool == "exec"
-	if isExecTool {
-		for _, p := range dangerousPatterns {
-			if strings.Contains(argsStr, p) {
-				findings = append(findings, "dangerous-cmd:"+p)
-			}
-		}
-	}
-
-	sensitiveTools := map[string]bool{
-		"write_file": true, "edit_file": true,
-		"delete_file": true, "move_file": true,
-	}
-	if sensitiveTools[tool] {
-		sensitiveTargets := []string{"/etc/", "/usr/", "/var/", "/root/", "~/.ssh/"}
-		for _, t := range sensitiveTargets {
-			if strings.Contains(argsStr, strings.ToLower(t)) {
-				findings = append(findings, "sensitive-path:"+t)
-			}
-		}
-	}
-
-	secretHits := scanPatterns(argsStr, secretPatterns)
-	for _, h := range secretHits {
-		findings = append(findings, "secret-in-args:"+h)
-	}
-
-	if len(findings) == 0 {
+	if len(ruleFindings) == 0 {
 		return &ToolInspectVerdict{Action: "allow", Severity: "NONE", Findings: []string{}}
 	}
 
-	severity := "MEDIUM"
-	for _, f := range findings {
-		if strings.HasPrefix(f, "dangerous-cmd:") || strings.HasPrefix(f, "sensitive-path:") {
-			severity = "HIGH"
-			break
-		}
-	}
+	severity := HighestSeverity(ruleFindings)
+	confidence := HighestConfidence(ruleFindings, severity)
 
 	action := "alert"
 	if severity == "HIGH" || severity == "CRITICAL" {
 		action = "block"
 	}
 
+	reasons := make([]string, 0, minInt(len(ruleFindings), 5))
+	for i, f := range ruleFindings {
+		if i >= 5 {
+			break
+		}
+		reasons = append(reasons, f.RuleID+":"+f.Title)
+	}
+
 	return &ToolInspectVerdict{
-		Action:   action,
-		Severity: severity,
-		Reason:   fmt.Sprintf("matched: %s", strings.Join(findings[:min(len(findings), 5)], ", ")),
-		Findings: findings,
+		Action:           action,
+		Severity:         severity,
+		Confidence:       confidence,
+		Reason:           fmt.Sprintf("matched: %s", strings.Join(reasons, ", ")),
+		Findings:         FindingStrings(ruleFindings),
+		DetailedFindings: ruleFindings,
 	}
 }
 
 // inspectMessageContent scans outbound message content for secrets, PII,
-// and data exfiltration patterns.
+// and data exfiltration patterns. Uses the same rule engine.
 func (a *APIServer) inspectMessageContent(req *ToolInspectRequest) *ToolInspectVerdict {
 	content := req.Content
 	if content == "" {
@@ -129,33 +86,38 @@ func (a *APIServer) inspectMessageContent(req *ToolInspectRequest) *ToolInspectV
 		return &ToolInspectVerdict{Action: "allow", Severity: "NONE", Findings: []string{}}
 	}
 
-	var findings []string
+	// Outbound messages get the full scan — tool name "message" for context
+	ruleFindings := ScanAllRules(content, "message")
 
-	secretHits := scanPatterns(content, secretPatterns)
-	for _, h := range secretHits {
-		findings = append(findings, "secret:"+h)
-	}
-
-	exfilHits := scanPatterns(content, exfilPatterns)
-	for _, h := range exfilHits {
-		findings = append(findings, "exfil:"+h)
-	}
-
-	if len(findings) == 0 {
+	if len(ruleFindings) == 0 {
 		return &ToolInspectVerdict{Action: "allow", Severity: "NONE", Findings: []string{}}
 	}
 
-	// Outbound messages carrying secrets or exfil patterns are HIGH —
-	// the content is about to leave the system boundary.
-	severity := "HIGH"
+	severity := HighestSeverity(ruleFindings)
+	confidence := HighestConfidence(ruleFindings, severity)
 
+	// Outbound messages with any findings default to block —
+	// content is about to leave the system boundary.
 	action := "block"
+	if severity == "LOW" {
+		action = "alert"
+	}
+
+	reasons := make([]string, 0, minInt(len(ruleFindings), 5))
+	for i, f := range ruleFindings {
+		if i >= 5 {
+			break
+		}
+		reasons = append(reasons, f.RuleID+":"+f.Title)
+	}
 
 	return &ToolInspectVerdict{
-		Action:   action,
-		Severity: severity,
-		Reason:   fmt.Sprintf("matched: %s", strings.Join(findings[:min(len(findings), 5)], ", ")),
-		Findings: findings,
+		Action:           action,
+		Severity:         severity,
+		Confidence:       confidence,
+		Reason:           fmt.Sprintf("matched: %s", strings.Join(reasons, ", ")),
+		Findings:         FindingStrings(ruleFindings),
+		DetailedFindings: ruleFindings,
 	}
 }
 
@@ -206,15 +168,8 @@ func (a *APIServer) handleInspectTool(w http.ResponseWriter, r *http.Request) {
 		auditAction = "inspect-tool-allow"
 	}
 	_ = a.logger.LogAction(auditAction, req.Tool,
-		fmt.Sprintf("severity=%s reason=%s elapsed=%s mode=%s",
-			verdict.Severity, verdict.Reason, elapsed, mode))
+		fmt.Sprintf("severity=%s confidence=%.2f reason=%s elapsed=%s mode=%s",
+			verdict.Severity, verdict.Confidence, verdict.Reason, elapsed, mode))
 
 	a.writeJSON(w, http.StatusOK, verdict)
-}
-
-func min(a, b int) int {
-	if a < b {
-		return a
-	}
-	return b
 }

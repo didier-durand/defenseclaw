@@ -62,6 +62,13 @@ func (l *LiteLLMProcess) Run(ctx context.Context) error {
 		return fmt.Errorf("guardrail: %s", msg)
 	}
 
+	if err := l.verifyProxyExtras(binary); err != nil {
+		l.health.SetGuardrail(StateError, err.Error(), nil)
+		fmt.Fprintf(os.Stderr, "[guardrail] %v\n", err)
+		<-ctx.Done()
+		return err
+	}
+
 	backoff := time.Second
 	const maxBackoff = 30 * time.Second
 
@@ -281,6 +288,50 @@ func (l *LiteLLMProcess) waitForHealthy(ctx context.Context) {
 			}
 		}
 	}
+}
+
+// verifyProxyExtras checks that litellm[proxy] extras (backoff, etc.) are
+// importable by the Python that runs the litellm binary. Without this check
+// the sidecar enters a crash-restart loop with a confusing "bad handshake"
+// error. The fix is: pip install 'litellm[proxy]'
+func (l *LiteLLMProcess) verifyProxyExtras(binary string) error {
+	pythonBin := l.resolvePython(binary)
+	if pythonBin == "" {
+		return nil // can't determine Python — skip check, let litellm fail naturally
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+	defer cancel()
+	cmd := exec.CommandContext(ctx, pythonBin, "-c", "import backoff")
+	cmd.Env = l.buildEnv()
+	if err := cmd.Run(); err != nil {
+		return fmt.Errorf("litellm[proxy] extras not installed (missing 'backoff' module) — run: pip install 'litellm[proxy]'")
+	}
+	return nil
+}
+
+// resolvePython reads the shebang of the litellm entry-point script to find
+// which Python interpreter it uses, so we can check imports against the
+// correct environment.
+func (l *LiteLLMProcess) resolvePython(binary string) string {
+	f, err := os.Open(binary)
+	if err != nil {
+		return ""
+	}
+	defer f.Close()
+
+	scanner := bufio.NewScanner(f)
+	if scanner.Scan() {
+		line := scanner.Text()
+		if strings.HasPrefix(line, "#!") {
+			shebang := strings.TrimPrefix(line, "#!")
+			shebang = strings.TrimSpace(shebang)
+			parts := strings.Fields(shebang)
+			if len(parts) > 0 {
+				return parts[len(parts)-1] // last token handles "#!/usr/bin/env python3"
+			}
+		}
+	}
+	return ""
 }
 
 func (l *LiteLLMProcess) findBinary() (string, error) {

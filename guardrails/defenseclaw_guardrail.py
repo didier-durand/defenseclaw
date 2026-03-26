@@ -469,6 +469,13 @@ class DefenseClawGuardrail(CustomGuardrail):
     # PRE-CALL: inspect prompt before it reaches the LLM
     # ------------------------------------------------------------------
 
+    # Defense-in-depth: strip OpenAI-only parameters that Anthropic rejects.
+    _STRIP_OPENAI_PARAMS = frozenset({
+        "store", "metadata", "frequency_penalty", "presence_penalty",
+        "logit_bias", "logprobs", "top_logprobs", "n", "seed",
+        "service_tier", "suffix",
+    })
+
     async def async_pre_call_hook(
         self,
         user_api_key_dict: UserAPIKeyAuth,
@@ -476,6 +483,9 @@ class DefenseClawGuardrail(CustomGuardrail):
         data: dict[str, Any],
         call_type: Any | None = None,
     ) -> Exception | str | dict[str, Any] | None:
+        for p in self._STRIP_OPENAI_PARAMS:
+            data.pop(p, None)
+
         messages = data.get("messages", [])
         text = self._last_user_text(messages)
         if not text:
@@ -499,6 +509,7 @@ class DefenseClawGuardrail(CustomGuardrail):
 
         if action == "block" and self.mode == "action":
             data["mock_response"] = self._block_message("prompt", reason)
+            return data
 
         return data
 
@@ -506,8 +517,9 @@ class DefenseClawGuardrail(CustomGuardrail):
     # MODERATION: runs in parallel with LLM call
     #
     # When pre_call already set mock_response (blocked the prompt),
-    # this is a no-op.  Otherwise runs an independent scan and blocks
-    # via mock_response on the data dict.
+    # this hook is a secondary check.  Uses HTTPException because
+    # ModifyResponseException has a streaming bug in litellm <=1.82.x
+    # (uses wrong variable for logging_obj → AttributeError).
     # ------------------------------------------------------------------
 
     async def async_moderation_hook(
@@ -534,7 +546,12 @@ class DefenseClawGuardrail(CustomGuardrail):
             reason = verdict.get("reason", "")
 
         if action == "block" and self.mode == "action":
-            data["mock_response"] = self._block_message("prompt", reason)
+            from fastapi import HTTPException
+            raise HTTPException(
+                status_code=400,
+                detail={"error": {"message": self._block_message("prompt", reason),
+                                  "type": "content_filter", "code": "content_filter"}},
+            )
 
     # ------------------------------------------------------------------
     # POST-CALL: inspect completion after LLM responds
@@ -595,7 +612,12 @@ class DefenseClawGuardrail(CustomGuardrail):
         )
 
         if action == "block" and self.mode == "action":
-            self._replace_response(response, reason)
+            from fastapi import HTTPException
+            raise HTTPException(
+                status_code=400,
+                detail={"error": {"message": self._block_message("completion", reason),
+                                  "type": "content_filter", "code": "content_filter"}},
+            )
 
     # ------------------------------------------------------------------
     # STREAMING POST-CALL: inspect streaming response chunks
@@ -815,23 +837,6 @@ class DefenseClawGuardrail(CustomGuardrail):
             "If you believe this is a false positive, contact your "
             "administrator or adjust the guardrail policy."
         )
-
-    def _replace_response(self, response: Any, reason: str) -> None:
-        """Mutate a ModelResponse in-place to replace content with a block notice."""
-        import litellm
-
-        if not isinstance(response, litellm.ModelResponse):
-            return
-        msg = self.block_message or (
-            "The model's response was blocked by DefenseClaw due to a "
-            f"potential security concern ({reason}). "
-            "If you believe this is a false positive, contact your "
-            "administrator or adjust the guardrail policy."
-        )
-        for choice in response.choices:
-            if hasattr(choice, "message"):
-                choice.message.content = msg
-                choice.message.tool_calls = None
 
     # ------------------------------------------------------------------
     # Helpers
