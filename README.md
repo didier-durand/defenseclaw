@@ -148,9 +148,9 @@ Verify the gateway is up with `openclaw gateway status`. See the [OpenClaw Getti
 ```bash
 git clone https://github.com/defenseclaw/defenseclaw.git
 cd defenseclaw
-make build
-source .venv/bin/activate
-defenseclaw init --enable-guardrails
+make dist
+./scripts/install.sh --local dist/
+defenseclaw init --enable-guardrail
 ```
 
 For platform-specific instructions (DGX Spark, macOS, cross-compilation), see [docs/INSTALL.md](docs/INSTALL.md).
