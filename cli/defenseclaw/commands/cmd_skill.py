@@ -273,6 +273,18 @@ def _skill_status_display(s: dict[str, Any], action_entry: Any = None) -> str:
     return "✗ missing"
 
 
+def _skill_display_name(s: dict[str, Any]) -> str:
+    emoji = (s.get("emoji", "") or "").strip()
+    name = s.get("name", "")
+
+    # Rich tables line up better when every row starts with the same
+    # icon slot, even if a skill doesn't ship with a custom emoji.
+    if not emoji:
+        emoji = "▫️"
+
+    return f"{emoji} {name}"
+
+
 @skill.command("list")
 @click.option("--json", "as_json", is_flag=True, help="Output merged skill list as JSON")
 @pass_ctx
@@ -372,17 +384,16 @@ def _print_skill_list_table(
 
     console = Console()
     table = Table(title=f"Skills ({ready_count}/{len(skills)} ready)")
-    table.add_column("Status", style="bold")
-    table.add_column("Skill")
-    table.add_column("Description", max_width=50)
-    table.add_column("Source")
-    table.add_column("Severity")
-    table.add_column("Actions")
+    table.add_column("Status", style="bold", no_wrap=True)
+    table.add_column("Skill", no_wrap=True, overflow="ellipsis", max_width=24)
+    table.add_column("Description", no_wrap=True, overflow="ellipsis", max_width=34)
+    table.add_column("Source", no_wrap=True, overflow="ellipsis", max_width=18)
+    table.add_column("Severity", no_wrap=True)
+    table.add_column("Actions", no_wrap=True, overflow="ellipsis", max_width=18)
 
     for s in skills:
         name = s.get("name", "")
-        emoji = s.get("emoji", "")
-        display_name = f"{emoji} {name}" if emoji else name
+        display_name = _skill_display_name(s)
         status_display = _skill_status_display(s, actions_map.get(name))
         desc = s.get("description", "")
         source = s.get("source", "")
@@ -412,7 +423,7 @@ def _print_skill_list_table(
         table.add_row(
             f"[{status_style}]{status_display}[/{status_style}]" if status_style else status_display,
             display_name,
-            desc[:50] + "…" if len(desc) > 50 else desc,
+            desc,
             source,
             f"[{sev_style}]{severity}[/{sev_style}]" if sev_style else severity,
             actions_str,

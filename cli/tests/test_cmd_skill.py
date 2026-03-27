@@ -253,6 +253,41 @@ class TestSkillList(SkillCommandTestBase):
         self.assertIn("code-review", result.output)
 
     @patch("defenseclaw.commands.cmd_skill._list_openclaw_skills_full")
+    def test_list_uses_single_visual_row_per_skill_on_narrow_terminals(self, mock_list):
+        mock_list.return_value = {
+            "skills": [
+                {
+                    "name": "apple-notes",
+                    "description": (
+                        "Manage Apple Notes via the memo CLI on macOS "
+                        "(create, search, update) with a longer text to force wrapping"
+                    ),
+                    "emoji": "📝",
+                    "eligible": False,
+                    "disabled": False,
+                    "blockedByAllowlist": False,
+                    "source": "openclaw-bundled",
+                    "bundled": True,
+                    "homepage": "",
+                },
+            ]
+        }
+
+        old_columns = os.environ.get("COLUMNS")
+        os.environ["COLUMNS"] = "80"
+        try:
+            result = self.invoke(["list"])
+        finally:
+            if old_columns is None:
+                os.environ.pop("COLUMNS", None)
+            else:
+                os.environ["COLUMNS"] = old_columns
+
+        self.assertEqual(result.exit_code, 0, result.output)
+        self.assertIn("apple", result.output)
+        self.assertNotIn("\n│           │", result.output)
+
+    @patch("defenseclaw.commands.cmd_skill._list_openclaw_skills_full")
     def test_list_json(self, mock_list):
         mock_list.return_value = {
             "skills": [
