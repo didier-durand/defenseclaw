@@ -17,10 +17,10 @@ For the legal and local-scope guardrails for this workflow, see
 When you run:
 
 ```bash
-defenseclaw setup splunk --logs --non-interactive
+defenseclaw setup splunk --logs --accept-splunk-license --non-interactive
 ```
 
-`DefenseClaw` starts the bundled local Splunk bridge and installs the local
+`DefenseClaw` starts the bundled local Splunk runtime and installs the local
 Splunk app automatically.
 
 The setup creates a restricted Splunk user:

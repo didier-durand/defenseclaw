@@ -89,11 +89,11 @@ If you want local dashboards and searchable audit history, enable the bundled
 Splunk workflow:
 
 ```bash
-defenseclaw setup splunk --logs --non-interactive
+defenseclaw setup splunk --logs --accept-splunk-license --non-interactive
 ```
 
 By downloading or installing `DefenseClaw`, and by launching the bundled local
-Splunk bridge through this preset, local Splunk usage is subject to the
+Splunk runtime through this preset, local Splunk usage is subject to the
 Splunk General Terms and the local-mode scope guardrails documented in
 [INSTALL.md](INSTALL.md).
 
@@ -101,7 +101,8 @@ That preset also installs the local Splunk app automatically. The app gives
 users a purpose-built place to investigate audit activity, runtime evidence,
 diagnostics, metrics, traces, and saved searches.
 
-The local setup aligns DefenseClaw with this contract:
+The local setup aligns DefenseClaw with these default local preset values.
+These values can vary if the preset or config is overridden:
 
 - HEC endpoint `http://127.0.0.1:8088/services/collector/event`
 - index `defenseclaw_local`
@@ -110,7 +111,7 @@ The local setup aligns DefenseClaw with this contract:
 
 Recommended local flow:
 
-1. Run `defenseclaw setup splunk --logs --non-interactive`
+1. Run `defenseclaw setup splunk --logs --accept-splunk-license --non-interactive`
 2. Start the DefenseClaw sidecar
 3. Open local Splunk using the printed URL and credentials
 4. Validate data in local Splunk

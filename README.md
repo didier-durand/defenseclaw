@@ -239,11 +239,11 @@ export DEFENSECLAW_SPLUNK_HEC_TOKEN="your-hec-token"
 For local development, use the built-in preset:
 
 ```bash
-defenseclaw setup splunk --logs --non-interactive
+defenseclaw setup splunk --logs --accept-splunk-license --non-interactive
 ```
 
 By downloading or installing `DefenseClaw`, and by launching the bundled local
-Splunk bridge through this preset, local Splunk usage is subject to the
+Splunk runtime through this preset, local Splunk usage is subject to the
 Splunk General Terms and the local-mode scope guardrails documented in
 [docs/INSTALL.md](docs/INSTALL.md).
 
@@ -251,7 +251,8 @@ That command also installs the local Splunk app automatically. The app gives
 users a purpose-built investigation surface for DefenseClaw audit activity,
 OpenClaw runtime evidence, diagnostics, metrics, traces, and saved searches.
 
-The local setup aligns the sidecar with this contract:
+The local setup aligns the sidecar with these default local preset values.
+These values can vary if the preset or config is overridden:
 
 - HEC endpoint `http://127.0.0.1:8088/services/collector/event`
 - index `defenseclaw_local`
@@ -260,7 +261,7 @@ The local setup aligns the sidecar with this contract:
 
 Recommended local flow:
 
-1. Run `defenseclaw setup splunk --logs --non-interactive`
+1. Run `defenseclaw setup splunk --logs --accept-splunk-license --non-interactive`
 2. Start the DefenseClaw sidecar
 3. Open local Splunk with the URL and credentials printed by the setup command
 4. Validate events in local Splunk

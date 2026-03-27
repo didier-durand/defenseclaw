@@ -497,7 +497,7 @@ Enterprise container with the DefenseClaw Splunk bridge
 defenseclaw setup splunk --o11y --realm us1 --access-token $SPLUNK_TOKEN --non-interactive
 
 # Enable local Splunk logs (requires Docker)
-defenseclaw setup splunk --logs --non-interactive
+defenseclaw setup splunk --logs --accept-splunk-license --non-interactive
 
 # Disable both
 defenseclaw setup splunk --disable
