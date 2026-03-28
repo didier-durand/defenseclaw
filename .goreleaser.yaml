@@ -51,15 +51,17 @@ changelog:
       - "^chore:"
       - "Merge pull request"
 
-brews:
+homebrew_casks:
   - repository:
-      owner: defenseclaw
+      owner: cisco-ai-defense
       name: homebrew-tap
       token: "{{ .Env.GITHUB_TOKEN }}"
     name: defenseclaw
-    homepage: "https://github.com/defenseclaw/defenseclaw"
+    homepage: "https://github.com/cisco-ai-defense/defenseclaw"
     description: "Enterprise governance layer for OpenClaw"
-    install: |
-      bin.install "defenseclaw"
-    test: |
-      system "#{bin}/defenseclaw", "--version"
+    hooks:
+      post:
+        install: |
+          if OS.mac?
+            system_command "/usr/bin/xattr", args: ["-dr", "com.apple.quarantine", "#{staged_path}/defenseclaw"]
+          end
